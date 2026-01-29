@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Download, RefreshCw, Copy, Check } from 'lucide-react';
+import { RefreshCw, Copy, Check } from 'lucide-react';
 
 const UPDATER_ENDPOINT = 'https://github.com/yrippert-maker/papayu/releases/latest/download/latest.json';
 const CHANNEL = 'stable';
