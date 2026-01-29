@@ -25,7 +25,10 @@ jobs:
           cache-dependency-path: desktop/ui/package-lock.json
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
+  with:
+    toolchain: stable
+    targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install UI deps
         run: cd desktop/ui && npm ci
