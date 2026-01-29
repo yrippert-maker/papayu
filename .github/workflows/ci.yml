@@ -35,11 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-  with:
-    toolchain: stable
-    targets: aarch64-apple-darwin,x86_64-apple-darwin
+        with:
+          toolchain: stable
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
