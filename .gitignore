@@ -1,0 +1,19 @@
+# env
+.env
+.env.*
+*.env
+
+# OS
+.DS_Store
+
+# Node
+node_modules
+dist
+build
+
+# Rust
+/desktop/src-tauri/target
+/desktop/src-tauri/.cargo
+
+# Logs
+*.log
