@@ -48,6 +48,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PAPAYU_PROJECT_ROOT: ${{ github.workspace }}
         with:
           projectPath: desktop/src-tauri
           includeUpdaterJson: true

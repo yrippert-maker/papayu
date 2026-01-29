@@ -14,8 +14,8 @@
   },
 
   "build": {
-    "beforeDevCommand": "cd ../ui && npm run dev -- --port 5173",
-    "beforeBuildCommand": "cd ../ui && npm run build",
+    "beforeDevCommand": "cd \"${PAPAYU_PROJECT_ROOT:-$HOME/PAPA-YU}/desktop/ui\" && npm run dev -- --port 5173",
+    "beforeBuildCommand": "cd \"${PAPAYU_PROJECT_ROOT:-$HOME/PAPA-YU}/desktop/ui\" && npm run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../ui/dist"
   },
