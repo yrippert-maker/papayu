@@ -60,8 +60,8 @@
 - `schema_version=2` → допускает `PATCH_FILE` / `REPLACE_RANGE` и расширенные поля.
 
 В коде:
-- Компилировать обе схемы: `llm_response_schema_v1.json`, `llm_response_schema_v2.json`.
-- Выбор активной по env: `PAPAYU_PROTOCOL_VERSION=1|2`.
+- Компилировать обе схемы: `llm_response_schema.json` (v1), `llm_response_schema_v2.json`.
+- Выбор активной по env: `PAPAYU_PROTOCOL_VERSION=1|2` (default 1).
 - Валидация/парсер: сначала проверить schema v2 (если включена), иначе v1.
 
 ---

@@ -9,8 +9,12 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-fn schema_hash() -> String {
-    let schema_raw = include_str!("../../config/llm_response_schema.json");
+fn schema_hash_for_version(version: u32) -> String {
+    let schema_raw = if version == 2 {
+        include_str!("../../config/llm_response_schema_v2.json")
+    } else {
+        include_str!("../../config/llm_response_schema.json")
+    };
     let mut hasher = Sha256::new();
     hasher.update(schema_raw.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -63,11 +67,12 @@ fn trace_to_golden_format(trace: &serde_json::Value) -> Result<serde_json::Value
         .or_else(|| trace.get("config_snapshot").and_then(|c| c.get("schema_version")))
         .cloned()
         .unwrap_or(serde_json::json!(1));
+    let version = schema_version.as_u64().unwrap_or(1) as u32;
     let schema_hash_val = trace
         .get("schema_hash")
         .or_else(|| trace.get("config_snapshot").and_then(|c| c.get("schema_hash")))
         .cloned()
-        .unwrap_or_else(|| serde_json::Value::String(schema_hash()));
+        .unwrap_or_else(|| serde_json::Value::String(schema_hash_for_version(version)));
 
     let validated = trace.get("validated_json").cloned();
     let validated_obj = validated

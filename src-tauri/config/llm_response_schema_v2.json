@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "x_schema_version": 2,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actions"],
+  "properties": {
+    "actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/action" },
+      "maxItems": 200
+    },
+    "summary": { "type": "string" },
+    "context_requests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/context_request" }
+    },
+    "memory_patch": { "$ref": "#/$defs/memory_patch" }
+  },
+  "$defs": {
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "CREATE_FILE",
+            "CREATE_DIR",
+            "UPDATE_FILE",
+            "PATCH_FILE",
+            "DELETE_FILE",
+            "DELETE_DIR"
+          ]
+        },
+        "path": { "type": "string" },
+        "content": { "type": "string" },
+        "patch": { "type": "string" },
+        "base_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "CREATE_DIR" } } },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["content"] },
+                { "required": ["patch"] },
+                { "required": ["base_sha256"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "DELETE_DIR" } } },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["content"] },
+                { "required": ["patch"] },
+                { "required": ["base_sha256"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "DELETE_FILE" } } },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["content"] },
+                { "required": ["patch"] },
+                { "required": ["base_sha256"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["CREATE_FILE", "UPDATE_FILE"] } } },
+          "then": {
+            "required": ["content"],
+            "not": {
+              "anyOf": [
+                { "required": ["patch"] },
+                { "required": ["base_sha256"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "PATCH_FILE" } } },
+          "then": {
+            "required": ["patch", "base_sha256"],
+            "not": { "anyOf": [{ "required": ["content"] }] }
+          }
+        }
+      ]
+    },
+    "context_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["read_file", "search", "logs", "env"] },
+        "path": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "glob": { "type": "string" },
+        "query": { "type": "string" },
+        "source": { "type": "string" },
+        "last_n": { "type": "integer", "minimum": 1, "maximum": 5000 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "read_file" } } },
+          "then": { "required": ["path"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "search" } } },
+          "then": { "required": ["query"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "logs" } } },
+          "then": { "required": ["source"] }
+        }
+      ]
+    },
+    "memory_patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user.preferred_style": { "type": "string" },
+        "user.ask_budget": { "type": "integer" },
+        "user.risk_tolerance": { "type": "string" },
+        "user.default_language": { "type": "string" },
+        "user.output_format": { "type": "string" },
+        "project.default_test_command": { "type": "string" },
+        "project.default_lint_command": { "type": "string" },
+        "project.default_format_command": { "type": "string" },
+        "project.package_manager": { "type": "string" },
+        "project.build_command": { "type": "string" },
+        "project.src_roots": { "type": "array", "items": { "type": "string" } },
+        "project.test_roots": { "type": "array", "items": { "type": "string" } },
+        "project.ci_notes": { "type": "string" }
+      }
+    }
+  }
+}

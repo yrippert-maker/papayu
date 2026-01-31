@@ -50,6 +50,7 @@
 - **make/npm shortcuts:** `make golden` (trace→fixture), `make test-protocol` (golden_traces_v1_validate).
 - **CI:** `.github/workflows/protocol-check.yml` — golden_traces_v1_validate на push/PR.
 - **Политика golden traces:** в docs/golden_traces/README.md — когда/как обновлять, при смене schema_hash.
+- **Protocol v2 schema (plumbing):** `llm_response_schema_v2.json` — object-only, PATCH_FILE, base_sha256. `PAPAYU_PROTOCOL_VERSION=1|2` (default 1). schema_version и schema_hash динамические в trace.
 
 ### Изменено
 

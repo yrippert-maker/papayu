@@ -23,11 +23,33 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const SCHEMA_RAW: &str = include_str!("../../config/llm_response_schema.json");
+const SCHEMA_V2_RAW: &str = include_str!("../../config/llm_response_schema_v2.json");
+
+fn protocol_version() -> u32 {
+    std::env::var("PAPAYU_PROTOCOL_VERSION")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|v| *v == 1 || *v == 2)
+        .unwrap_or(1)
+}
 
 pub(crate) fn schema_hash() -> String {
+    schema_hash_for_version(protocol_version())
+}
+
+pub(crate) fn schema_hash_for_version(version: u32) -> String {
+    let raw = if version == 2 {
+        SCHEMA_V2_RAW
+    } else {
+        SCHEMA_RAW
+    };
     let mut hasher = Sha256::new();
-    hasher.update(SCHEMA_RAW.as_bytes());
+    hasher.update(raw.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn current_schema_version() -> u32 {
+    protocol_version()
 }
 
 #[derive(serde::Serialize)]
@@ -135,7 +157,7 @@ fn redact_secrets(s: &str) -> String {
 fn write_trace(project_path: &str, trace_id: &str, trace: &mut serde_json::Value) {
     // Добавляем config_snapshot для воспроизводимости
     let config_snapshot = serde_json::json!({
-        "schema_version": LLM_PLAN_SCHEMA_VERSION,
+        "schema_version": current_schema_version(),
         "schema_hash": schema_hash(),
         "strict_json": std::env::var("PAPAYU_LLM_STRICT_JSON").unwrap_or_default(),
         "trace_raw": std::env::var("PAPAYU_TRACE_RAW").unwrap_or_default(),
@@ -217,7 +239,8 @@ pub const FIXIT_SYSTEM_PROMPT: &str = r#"Ты — режим Fix-it внутри
 - Не делай широкие рефакторы без запроса: исправляй минимально.
 - Если не хватает данных, можно задать 1 вопрос; иначе действуй."#;
 
-/// Формальная версия схемы ответа (для воспроизводимости и будущего v2).
+/// Формальная версия схемы v1 (для тестов и совместимости).
+#[allow(dead_code)]
 pub const LLM_PLAN_SCHEMA_VERSION: u32 = 1;
 
 /// System prompt: режим Fix-plan (один JSON, context_requests, план → подтверждение → применение).
@@ -400,9 +423,14 @@ const REPAIR_PROMPT_PLAN_ACTIONS_MUST_BE_EMPTY: &str = r#"
 Верни объект с "actions": [] и "summary" (диагноз + план шагов).
 "#;
 
-/// Компилирует JSON Schema для локальной валидации (один раз).
+/// Компилирует JSON Schema для локальной валидации (v1 или v2 по protocol_version).
 fn compiled_response_schema() -> Option<JSONSchema> {
-    let schema: serde_json::Value = serde_json::from_str(include_str!("../../config/llm_response_schema.json")).ok()?;
+    let raw = if protocol_version() == 2 {
+        SCHEMA_V2_RAW
+    } else {
+        SCHEMA_RAW
+    };
+    let schema: serde_json::Value = serde_json::from_str(raw).ok()?;
     JSONSchema::options().compile(&schema).ok()
 }
 
@@ -778,7 +806,7 @@ pub async fn plan(
         }
     }
     let system_prompt = get_system_prompt_for_mode();
-    let system_content = format!("{}{}\n\nLLM_PLAN_SCHEMA_VERSION={}", system_prompt, memory_block, LLM_PLAN_SCHEMA_VERSION);
+    let system_content = format!("{}{}\n\nLLM_PLAN_SCHEMA_VERSION={}", system_prompt, memory_block, current_schema_version());
 
     let project_root = Path::new(path);
     let base_context = context::gather_base_context(project_root, &mem);
@@ -843,9 +871,14 @@ pub async fn plan(
         .next()
         .unwrap_or("unknown");
 
+    let schema_version = current_schema_version();
     let response_format = if use_strict_json {
-        let schema_json: serde_json::Value = serde_json::from_str(include_str!("../../config/llm_response_schema.json"))
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let raw = if schema_version == 2 {
+            SCHEMA_V2_RAW
+        } else {
+            SCHEMA_RAW
+        };
+        let schema_json: serde_json::Value = serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}));
         Some(ResponseFormatJsonSchema {
             ty: "json_schema".to_string(),
             json_schema: ResponseFormatJsonSchemaInner {
@@ -895,7 +928,7 @@ pub async fn plan(
             "LLM_REQUEST_SENT",
             &[
                 ("model", model.trim().to_string()),
-                ("schema_version", LLM_PLAN_SCHEMA_VERSION.to_string()),
+                ("schema_version", schema_version.to_string()),
                 ("strict_json", (!skip_response_format && use_strict_json).to_string()),
                 ("provider", provider.to_string()),
                 ("token_budget", max_tokens.to_string()),
@@ -1098,7 +1131,7 @@ pub async fn plan(
     let mut trace_val = serde_json::json!({
         "trace_id": trace_id,
         "event": "LLM_PLAN_OK",
-        "schema_version": LLM_PLAN_SCHEMA_VERSION,
+        "schema_version": current_schema_version(),
         "model": model.trim(),
         "provider": provider,
         "actions_count": last_actions.len(),
@@ -1142,8 +1175,8 @@ pub async fn plan(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_files_read_from_plan_context, parse_actions_from_json, schema_hash, validate_actions,
-        validate_update_without_base, FIX_PLAN_SYSTEM_PROMPT, LLM_PLAN_SCHEMA_VERSION,
+        extract_files_read_from_plan_context, parse_actions_from_json, schema_hash, schema_hash_for_version,
+        validate_actions, validate_update_without_base, FIX_PLAN_SYSTEM_PROMPT, LLM_PLAN_SCHEMA_VERSION,
     };
     use crate::types::{Action, ActionKind};
     use std::fs;
@@ -1168,6 +1201,21 @@ mod tests {
             FIX_PLAN_SYSTEM_PROMPT, LLM_PLAN_SCHEMA_VERSION
         );
         assert!(system_content.contains("LLM_PLAN_SCHEMA_VERSION=1"));
+    }
+
+    #[test]
+    fn test_schema_v2_compiles() {
+        let schema: serde_json::Value =
+            serde_json::from_str(super::SCHEMA_V2_RAW).expect("v2 schema valid JSON");
+        let compiled = jsonschema::JSONSchema::options().compile(&schema);
+        assert!(compiled.is_ok(), "v2 schema must compile");
+    }
+
+    #[test]
+    fn test_schema_hash_non_empty_v2() {
+        let h = schema_hash_for_version(2);
+        assert!(!h.is_empty());
+        assert_eq!(h.len(), 64);
     }
 
     #[test]
