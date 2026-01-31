@@ -74,6 +74,10 @@ pub fn preflight_actions(root: &Path, actions: &[Action]) -> Result<(), (String,
                 }
                 total_bytes += len;
             }
+            ActionKind::PatchFile => {
+                files_touched += 1;
+                total_bytes += a.patch.as_deref().map(|s| s.len() as u64).unwrap_or(0);
+            }
             ActionKind::CreateDir => {
                 dirs_created += 1;
             }

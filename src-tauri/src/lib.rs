@@ -1,12 +1,15 @@
 mod commands;
 mod context;
+mod online_research;
 mod memory;
+mod patch;
+mod protocol;
 mod store;
 mod tx;
 mod types;
 mod verify;
 
-use commands::{add_project, agentic_run, analyze_project, append_session_event, apply_actions, apply_actions_tx, export_settings, fetch_trends_recommendations, generate_actions, generate_actions_from_report, get_project_profile, get_project_settings, get_trends_recommendations, get_undo_redo_state_cmd, import_settings, list_projects, list_sessions, load_folder_links, preview_actions, propose_actions, redo_last, run_batch, save_folder_links, set_project_settings, undo_available, undo_last, undo_last_tx, undo_status};
+use commands::{add_project, agentic_run, analyze_project, analyze_weekly_reports, append_session_event, apply_actions, apply_actions_tx, export_settings, fetch_trends_recommendations, generate_actions, generate_actions_from_report, get_project_profile, get_project_settings, get_trends_recommendations, get_undo_redo_state_cmd, import_settings, list_projects, list_sessions, load_folder_links, preview_actions, propose_actions, redo_last, run_batch, save_folder_links, save_report_to_file, set_project_settings, undo_available, undo_last, undo_last_tx, undo_status};
 use tauri::Manager;
 use commands::FolderLinks;
 use types::{ApplyPayload, BatchPayload};
@@ -49,6 +52,32 @@ fn verify_project(path: String) -> types::VerifyResult {
     verify::verify_project(&path)
 }
 
+/// Анализ еженедельных отчётов: агрегация трасс и генерация отчёта через LLM.
+#[tauri::command]
+async fn analyze_weekly_reports_cmd(
+    project_path: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> commands::WeeklyReportResult {
+    analyze_weekly_reports(std::path::Path::new(&project_path), from, to).await
+}
+
+/// Online research: поиск + fetch + LLM summarize.
+#[tauri::command]
+async fn research_answer_cmd(query: String) -> Result<online_research::OnlineAnswer, String> {
+    online_research::research_answer(&query).await
+}
+
+/// Сохранить отчёт в docs/reports/weekly_YYYY-MM-DD.md.
+#[tauri::command]
+fn save_report_cmd(project_path: String, report_md: String, date: Option<String>) -> Result<String, String> {
+    save_report_to_file(
+        std::path::Path::new(&project_path),
+        &report_md,
+        date.as_deref(),
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -84,6 +113,9 @@ pub fn run() {
             fetch_trends_recommendations,
             export_settings,
             import_settings,
+            analyze_weekly_reports_cmd,
+            save_report_cmd,
+            research_answer_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

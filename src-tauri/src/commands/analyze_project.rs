@@ -55,6 +55,8 @@ pub fn analyze_project(paths: Vec<String>, attached_files: Option<Vec<String>>) 
             kind: ActionKind::CreateFile,
             path: ".env.example".to_string(),
             content: Some("# Copy to .env and fill\n".to_string()),
+            patch: None,
+            base_sha256: None,
         });
     }
     if has_src && !has_tests {
@@ -109,6 +111,8 @@ fn build_action_groups(
                 kind: ActionKind::CreateFile,
                 path: "README.md".into(),
                 content: Some("# Project\n\n## Overview\n\n## How to run\n\n## Tests\n\n".into()),
+                patch: None,
+                base_sha256: None,
             }],
         });
     }
@@ -129,6 +133,8 @@ fn build_action_groups(
                 kind: ActionKind::CreateFile,
                 path: ".gitignore".into(),
                 content: Some(content.to_string()),
+                patch: None,
+                base_sha256: None,
             }],
         });
     }
@@ -143,11 +149,15 @@ fn build_action_groups(
                     kind: ActionKind::CreateDir,
                     path: "tests".into(),
                     content: None,
+                    patch: None,
+                    base_sha256: None,
                 },
                 Action {
                     kind: ActionKind::CreateFile,
                     path: "tests/README.md".into(),
                     content: Some("# Tests\n\nAdd tests here.\n".into()),
+                    patch: None,
+                    base_sha256: None,
                 },
             ],
         });

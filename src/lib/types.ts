@@ -73,6 +73,10 @@ export interface AgentPlan {
   plan_json?: string;
   /** Собранный контекст для Apply */
   plan_context?: string;
+  /** При ok=false и триггере online fallback: UI вызывает researchAnswer(query) */
+  online_fallback_suggested?: string | null;
+  /** true — online_context_md был принят и вставлен в prompt */
+  online_context_used?: boolean | null;
 }
 
 /** Тренды и рекомендации (мониторинг не реже раз в месяц) */
@@ -98,6 +102,7 @@ export interface ApplyTxResult {
   checks: { stage: string; ok: boolean; output: string }[];
   error?: string;
   error_code?: string;
+  protocol_fallback_stage?: string | null;
 }
 
 /** v3.2: результат generate_actions_from_report */
@@ -204,4 +209,29 @@ export interface Session {
   created_at: string;
   updated_at: string;
   events: SessionEvent[];
+}
+
+/** Источник online research */
+export interface OnlineSource {
+  url: string;
+  title: string;
+  published_at?: string;
+  snippet?: string;
+}
+
+/** Результат online research */
+export interface OnlineAnswer {
+  answer_md: string;
+  sources: OnlineSource[];
+  confidence: number;
+  notes?: string;
+}
+
+/** Результат еженедельного отчёта */
+export interface WeeklyReportResult {
+  ok: boolean;
+  error?: string;
+  stats_bundle?: unknown;
+  llm_report?: unknown;
+  report_md?: string;
 }

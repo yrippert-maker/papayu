@@ -6,6 +6,12 @@ pub struct Action {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// v2 PATCH_FILE: unified diff
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    /// v2 PATCH_FILE: sha256 hex текущей версии файла
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -14,6 +20,7 @@ pub enum ActionKind {
     CreateFile,
     CreateDir,
     UpdateFile,
+    PatchFile,
     DeleteFile,
     DeleteDir,
 }
@@ -158,6 +165,11 @@ pub struct DiffItem {
     /// v2.4.2: BLOCKED — защищённый/не-текстовый файл
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// v2: bytes до/после для PATCH_FILE (UX)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_before: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_after: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,14 +326,29 @@ pub struct AgentPlan {
     /// Собранный контекст для передачи в Apply вместе с plan_json.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_context: Option<String>,
+    /// Версия протокола, использованная при генерации (для v1 fallback apply).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_version_used: Option<u32>,
+    /// При ok=false и триггере online fallback: UI вызывает researchAnswer(query).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_fallback_suggested: Option<String>,
+    /// true — online_context_md был принят и вставлен в prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_context_used: Option<bool>,
 }
 
 /// v3.1: опции применения (auto_check). v2.4.2: user_confirmed для apply_actions_tx.
+/// protocol_version_override: при v1 fallback после v2 APPLY failure.
+/// fallback_attempted: true — применяем v1 fallback; при ошибке не повторять fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyOptions {
     pub auto_check: bool,
     #[serde(default)]
     pub user_confirmed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_version_override: Option<u32>,
+    #[serde(default)]
+    pub fallback_attempted: bool,
 }
 
 /// v3.1: результат этапа проверки (verify / build / smoke)
@@ -345,6 +372,8 @@ pub struct ApplyTxResult {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_fallback_stage: Option<String>,
 }
 
 /// v3.2: результат генерации действий из отчёта (generate_actions_from_report)

@@ -20,6 +20,9 @@ import {
   fetchTrendsRecommendations,
   exportSettings,
   importSettings,
+  analyzeWeeklyReports,
+  saveReport,
+  researchAnswer,
 } from "@/lib/tauri";
 import { AgenticResult } from "@/pages/tasks/AgenticResult";
 import { useUndoRedo } from "@/pages/tasks/useUndoRedo";
@@ -30,6 +33,7 @@ import type {
   AnalyzeReport,
   ChatMessage,
   DiffItem,
+  OnlineSource,
   ProjectProfile,
   ApplyTxResult,
   AgenticRunRequest,
@@ -92,10 +96,23 @@ export default function Tasks() {
   const applyingRef = useRef(false);
   const [requestHistory, setRequestHistory] = useState<{ id: string; title: string; messages: ChatMessage[]; lastPath: string | null; lastReport: AnalyzeReport | null }[]>([]);
   const [trendsModalOpen, setTrendsModalOpen] = useState(false);
+  const [weeklyReportModalOpen, setWeeklyReportModalOpen] = useState(false);
+  const [weeklyReport, setWeeklyReport] = useState<{ reportMd: string; projectPath: string } | null>(null);
+  const [weeklyReportLoading, setWeeklyReportLoading] = useState(false);
   const [selectedRecommendation, setSelectedRecommendation] = useState<TrendsRecommendation | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [lastPlanJson, setLastPlanJson] = useState<string | null>(null);
   const [lastPlanContext, setLastPlanContext] = useState<string | null>(null);
+  const lastGoalWithOnlineFallbackRef = useRef<string | null>(null);
+  const [lastOnlineAnswer, setLastOnlineAnswer] = useState<{ answer_md: string; sources: OnlineSource[]; confidence: number } | null>(null);
+  const [onlineContextPending, setOnlineContextPending] = useState<{ md: string; sources: string[] } | null>(null);
+  const [onlineAutoUseAsContext, setOnlineAutoUseAsContext] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem("papa_yu_online_auto_use_as_context");
+      if (stored !== null) return stored === "true";
+    } catch (_) {}
+    return false;
+  });
 
   const { undoAvailable, redoAvailable, refreshUndoRedo, handleUndo, handleRedo, setUndoAvailable } = useUndoRedo(lastPath, {
     setMessages,
@@ -115,6 +132,12 @@ export default function Tasks() {
       } catch (_) {}
     })();
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("papa_yu_online_auto_use_as_context", String(onlineAutoUseAsContext));
+    } catch (_) {}
+  }, [onlineAutoUseAsContext]);
 
   useEffect(() => {
     if (!lastPath) {
@@ -534,7 +557,75 @@ export default function Tasks() {
         await refreshUndoRedo();
       } else {
         const code = res.error_code || "";
-        if (code === "CONFIRM_REQUIRED") {
+        const isBaseShaError = code === "ERR_BASE_MISMATCH" || code === "ERR_BASE_SHA256_INVALID";
+        const isV2FallbackError = ["ERR_PATCH_APPLY_FAILED", "ERR_NON_UTF8_FILE", "ERR_V2_UPDATE_EXISTING_FORBIDDEN"].includes(code);
+        const repairFirstErrors = ["ERR_PATCH_APPLY_FAILED", "ERR_V2_UPDATE_EXISTING_FORBIDDEN"];
+        const canRetry = (isBaseShaError || isV2FallbackError) && lastPlanJson && lastPlanContext;
+        if (canRetry) {
+          let repairAttempt = 0;
+          let lastPlanJsonRetry = lastPlanJson;
+          let lastPlanContextRetry = lastPlanContext;
+          let lastErrorCode = code;
+          let retryRes: ApplyTxResult | null = null;
+          const maxRetries = repairFirstErrors.includes(code) ? 2 : 1;
+          for (let attempt = 0; attempt < maxRetries; attempt++) {
+            const isFallback = repairFirstErrors.includes(lastErrorCode) && repairAttempt >= 1;
+            setApplyProgressLog((prev) => [
+              ...prev,
+              isFallback ? "Retry v1 fallback…" : isBaseShaError ? "Retry с repair (base_sha256)…" : "Retry repair…",
+            ]);
+            try {
+              const plan = await proposeActions(
+                path,
+                lastReportJson ?? "{}",
+                "ok",
+                designStyle.trim() || undefined,
+                undefined,
+                lastPlanJsonRetry,
+                lastPlanContextRetry,
+                lastErrorCode,
+                lastPlanJsonRetry,
+                repairAttempt,
+                "apply",
+                undefined,
+                undefined,
+                undefined,
+                undefined
+              );
+              if (!plan.ok || plan.actions.length === 0) break;
+              retryRes = await apiApplyActionsTx(path, plan.actions, {
+                auto_check: autoCheck,
+                user_confirmed: true,
+                protocol_version_override: plan.protocol_version_used ?? undefined,
+                fallback_attempted: plan.protocol_version_used === 1,
+              });
+              setApplyResult(retryRes);
+              setApplyProgressLog((prev) => [...prev, retryRes!.ok ? "Готово." : (retryRes!.error || "Ошибка")]);
+              if (retryRes.ok) {
+                setMessages((m) => [
+                  ...m,
+                  { role: "system", text: plan.protocol_version_used === 1 ? "Изменения применены (v1 fallback)." : "Изменения применены (repair). Проверки пройдены." },
+                ]);
+                setPendingPreview(null);
+                setPendingActions(null);
+                setPendingActionIdx({});
+                await refreshUndoRedo();
+                break;
+              }
+              lastErrorCode = retryRes.error_code || lastErrorCode;
+              repairAttempt = 1;
+              if (plan.protocol_version_used === 1) break;
+            } catch (e) {
+              setApplyProgressLog((prev) => [...prev, `Retry failed: ${String(e)}`]);
+              break;
+            }
+          }
+          if (retryRes && !retryRes.ok) {
+            setMessages((m) => [...m, { role: "system", text: retryRes.error || retryRes.error_code || "Ошибка применения." }]);
+          } else if (!retryRes) {
+            setMessages((m) => [...m, { role: "system", text: res.error || res.error_code || "Ошибка применения." }]);
+          }
+        } else if (code === "CONFIRM_REQUIRED") {
           setMessages((m) => [...m, { role: "system", text: "Подтверждение обязательно перед применением." }]);
         } else if (code === "AUTO_CHECK_FAILED_ROLLED_BACK") {
           setMessages((m) => [...m, { role: "system", text: "Изменения привели к ошибкам, откат выполнен." }]);
@@ -772,6 +863,11 @@ export default function Tasks() {
             : undefined;
         } catch (_) {}
       }
+      const pending = onlineContextPending;
+      if (pending) {
+        setOnlineContextPending(null);
+        setLastOnlineAnswer(null);
+      }
       const plan = await proposeActions(
         pathToUse,
         reportToUse,
@@ -779,10 +875,94 @@ export default function Tasks() {
         designStyle.trim() || undefined,
         trendsContext,
         lastPlanJson ?? undefined,
-        lastPlanContext ?? undefined
+        lastPlanContext ?? undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        lastGoalWithOnlineFallbackRef.current === goal,
+        pending?.md ?? undefined,
+        pending?.sources ?? undefined,
+        !!pending
       );
       if (!plan.ok) {
-        setMessages((m) => [...m, { role: "assistant", text: plan.error ?? "Ошибка формирования плана" }]);
+        if (plan.online_fallback_suggested) {
+          const isAutoUse = onlineAutoUseAsContext;
+          const alreadyAttempted = lastGoalWithOnlineFallbackRef.current === goal;
+          if (isAutoUse && !alreadyAttempted) {
+            lastGoalWithOnlineFallbackRef.current = goal;
+            setMessages((m) => [...m, { role: "assistant", text: plan.error ?? "Ошибка формирования плана" }]);
+            setMessages((m) => [...m, { role: "system", text: "Онлайн-поиск (auto)…" }]);
+            try {
+              const online = await researchAnswer(plan.online_fallback_suggested);
+              setLastOnlineAnswer({ answer_md: online.answer_md, sources: online.sources ?? [], confidence: online.confidence });
+              const sourcesLine = online.sources?.length
+                ? "\n\nИсточники:\n" + online.sources.slice(0, 5).map((s) => `• ${s.title}: ${s.url}`).join("\n")
+                : "";
+              setMessages((m) => [...m, { role: "assistant", text: `**Online Research** (confidence: ${(online.confidence * 100).toFixed(0)}%)\n\n${online.answer_md}${sourcesLine}` }]);
+              setMessages((m) => [...m, { role: "system", text: "Повтор запроса с online context…" }]);
+              const onlineMd = online.answer_md.slice(0, 8000);
+              const onlineSources = online.sources.slice(0, 10).map((s) => s.url);
+              const plan2 = await proposeActions(
+                pathToUse,
+                reportToUse,
+                goal,
+                designStyle.trim() || undefined,
+                trendsContext,
+                lastPlanJson ?? undefined,
+                lastPlanContext ?? undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                true,
+                onlineMd,
+                onlineSources,
+                true,
+                plan.error_code ?? undefined
+              );
+              if (!plan2.ok) {
+                setMessages((m) => [...m, { role: "assistant", text: plan2.error ?? "Ошибка формирования плана после online context" }]);
+                return;
+              }
+              setLastPlanJson(plan2.plan_json ?? null);
+              setLastPlanContext(plan2.plan_context ?? null);
+              const summary = plan2.summary || "План от ИИ";
+              if (plan2.protocol_version_used) {
+                setMessages((m) => [...m, { role: "assistant", text: `${summary} (protocol v${plan2.protocol_version_used}, online context used)` }]);
+              } else {
+                setMessages((m) => [...m, { role: "assistant", text: `${summary} (online context used)` }]);
+              }
+              setPendingActions(plan2.actions);
+              const allIdx: Record<number, boolean> = {};
+              plan2.actions.forEach((_, i) => { allIdx[i] = true; });
+              setPendingActionIdx(allIdx);
+              if (plan2.actions.length) {
+                setMessages((m) => [...m, { role: "system", text: "Предпросмотр изменений…" }]);
+                await handlePreview(pathToUse, plan2.actions);
+              }
+            } catch (e) {
+              setMessages((m) => [...m, { role: "assistant", text: `Онлайн-поиск недоступен: ${String(e)}` }]);
+            }
+            return;
+          } else {
+            lastGoalWithOnlineFallbackRef.current = goal;
+            setMessages((m) => [...m, { role: "assistant", text: plan.error ?? "Ошибка формирования плана" }]);
+            setMessages((m) => [...m, { role: "system", text: "Попытка онлайн-поиска…" }]);
+            try {
+              const online = await researchAnswer(plan.online_fallback_suggested);
+              setLastOnlineAnswer({ answer_md: online.answer_md, sources: online.sources ?? [], confidence: online.confidence });
+              const sourcesLine = online.sources?.length
+                ? "\n\nИсточники:\n" + online.sources.slice(0, 5).map((s) => `• ${s.title}: ${s.url}`).join("\n")
+                : "";
+              setMessages((m) => [...m, { role: "assistant", text: `**Online Research** (confidence: ${(online.confidence * 100).toFixed(0)}%)\n\n${online.answer_md}${sourcesLine}` }]);
+            } catch (e) {
+              setMessages((m) => [...m, { role: "assistant", text: `Онлайн-поиск недоступен: ${String(e)}` }]);
+            }
+          }
+        } else {
+          setMessages((m) => [...m, { role: "assistant", text: plan.error ?? "Ошибка формирования плана" }]);
+        }
         return;
       }
       // Сохраняем план и контекст для Apply (когда пользователь напишет "ok" или "применяй")
@@ -974,6 +1154,49 @@ export default function Tasks() {
         >
           <img src="/send-icon.png" alt="" style={{ height: "20px", width: "auto", objectFit: "contain" }} />
           Тренды и рекомендации
+        </button>
+        <button
+          type="button"
+          onClick={async () => {
+            const path = lastPath || folderLinks[0];
+            if (!path) {
+              setMessages((m) => [...m, { role: "system", text: "Выберите проект для Weekly Report." }]);
+              return;
+            }
+            setWeeklyReportModalOpen(true);
+            setWeeklyReportLoading(true);
+            setWeeklyReport(null);
+            try {
+              const res = await analyzeWeeklyReports(path);
+              if (res.ok && res.report_md) {
+                setWeeklyReport({ reportMd: res.report_md, projectPath: path });
+              } else {
+                setWeeklyReport({ reportMd: res.error || "Ошибка генерации отчёта.", projectPath: path });
+              }
+            } catch (e) {
+              setWeeklyReport({ reportMd: String(e), projectPath: path });
+            } finally {
+              setWeeklyReportLoading(false);
+            }
+          }}
+          style={{
+            padding: "10px 14px",
+            background: "#059669",
+            color: "#fff",
+            border: "none",
+            borderRadius: "var(--radius-md)",
+            cursor: "pointer",
+            fontWeight: 600,
+            fontSize: "13px",
+            boxShadow: "0 2px 6px rgba(5, 150, 105, 0.3)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "8px",
+          }}
+          title="Еженедельный отчёт по телеметрии"
+        >
+          Weekly Report
         </button>
         {displayRequests.length > 0 && (
           <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-muted)", marginBottom: "4px", marginTop: "8px" }}>
@@ -1418,6 +1641,62 @@ export default function Tasks() {
             <p style={{ margin: 0 }}>1. Введите путь к папке проекта в поле ввода ниже и нажмите «Отправить» — здесь появится отчёт.</p>
             <p style={{ margin: "10px 0 0 0" }}>2. В блоке «Запрос к ИИ» введите задачу (например «добавь README» или «создай проект с нуля») и нажмите «Получить рекомендации» — ИИ анализирует всё содержимое папки и даёт ответ с вариантами в этом же окне.</p>
             <p style={{ margin: "10px 0 0 0" }}>3. После изменений нажмите «Проверить целостность» для автоматической проверки типов, сборки и тестов.</p>
+          </div>
+        )}
+        {lastOnlineAnswer && (
+          <div style={{ marginBottom: "16px", padding: "14px", background: "#f0fdf4", borderRadius: "var(--radius-md)", border: "1px solid #86efac" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+              <div style={{ fontWeight: 600, color: "#166534" }}>Online Research</div>
+              {onlineAutoUseAsContext && (
+                <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: 500, background: "#dcfce7", padding: "2px 8px", borderRadius: "4px" }}>Auto-used ✓</span>
+              )}
+            </div>
+            <div style={{ fontSize: "14px", whiteSpace: "pre-wrap", wordBreak: "break-word", marginBottom: "10px" }}>{lastOnlineAnswer.answer_md}</div>
+            {lastOnlineAnswer.sources?.length ? (
+              <div style={{ marginBottom: "10px", fontSize: "13px" }}>
+                <span style={{ fontWeight: 500, color: "#64748b" }}>Источники:</span>
+                <ul style={{ margin: "4px 0 0 0", paddingLeft: "20px" }}>
+                  {lastOnlineAnswer.sources.slice(0, 8).map((s, j) => (
+                    <li key={j}>
+                      <a href={s.url} target="_blank" rel="noopener noreferrer" style={{ color: "#2563eb" }}>{s.title || s.url}</a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              {!onlineAutoUseAsContext && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOnlineContextPending({ md: lastOnlineAnswer!.answer_md, sources: lastOnlineAnswer!.sources?.map((s) => s.url).filter(Boolean) ?? [] });
+                    setMessages((m) => [...m, { role: "system", text: "Online Research будет использован в следующем запросе." }]);
+                  }}
+                  style={{ padding: "6px 12px", fontSize: "13px", background: "#166534", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: 500 }}
+                >
+                  Use as context (once)
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => { navigator.clipboard.writeText(lastOnlineAnswer!.answer_md); }}
+                style={{ padding: "6px 12px", fontSize: "13px", background: "#e2e8f0", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: 500 }}
+              >
+                Copy answer
+              </button>
+              {onlineAutoUseAsContext && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOnlineAutoUseAsContext(false);
+                    setMessages((m) => [...m, { role: "system", text: "Auto-use отключён для текущего проекта." }]);
+                  }}
+                  style={{ padding: "6px 12px", fontSize: "13px", background: "#f87171", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: 500 }}
+                >
+                  Disable auto-use
+                </button>
+              )}
+            </div>
           </div>
         )}
         {messages.length > 0 && messages.map((msg, i) => (
@@ -2058,6 +2337,65 @@ export default function Tasks() {
                   </button>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {weeklyReportModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9998,
+          }}
+          onClick={(e) => e.target === e.currentTarget && setWeeklyReportModalOpen(false)}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "var(--radius-xl)",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
+              maxWidth: 680,
+              width: "90%",
+              maxHeight: "85vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--color-border)", fontWeight: 700, fontSize: "16px", color: "#059669", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+              Weekly Report
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                {weeklyReport && !weeklyReportLoading && !weeklyReport.reportMd.startsWith("Ошибка") && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!weeklyReport) return;
+                      try {
+                        const path = await saveReport(weeklyReport.projectPath, weeklyReport.reportMd);
+                        setMessages((m) => [...m, { role: "system", text: `Отчёт сохранён: ${path}` }]);
+                      } catch (e) {
+                        setMessages((m) => [...m, { role: "system", text: `Ошибка сохранения: ${String(e)}` }]);
+                      }
+                    }}
+                    style={{ padding: "6px 12px", background: "#059669", color: "#fff", border: "none", borderRadius: "8px", fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Сохранить отчёт
+                  </button>
+                )}
+                <button type="button" onClick={() => setWeeklyReportModalOpen(false)} style={{ padding: "6px 12px", background: "#e2e8f0", border: "none", borderRadius: "8px", fontWeight: 600 }}>Закрыть</button>
+              </div>
+            </div>
+            <div style={{ padding: "16px 20px", overflowY: "auto", flex: 1, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono, monospace)", fontSize: "13px", lineHeight: 1.6 }}>
+              {weeklyReportLoading && <p style={{ color: "var(--color-text-muted)" }}>Собираю трассы и генерирую отчёт…</p>}
+              {weeklyReport && !weeklyReportLoading && <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{weeklyReport.reportMd}</pre>}
+              {!weeklyReport && !weeklyReportLoading && <p style={{ color: "var(--color-text-muted)" }}>Нет данных.</p>}
             </div>
           </div>
         </div>

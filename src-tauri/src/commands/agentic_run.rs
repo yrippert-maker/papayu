@@ -71,6 +71,8 @@ fn build_plan(
             content: Some(
                 "# Project\n\n## Описание\n\nКратко опишите проект.\n\n## Запуск\n\n- dev: ...\n- build: ...\n\n## Структура\n\n- src/\n- tests/\n".into(),
             ),
+            patch: None,
+            base_sha256: None,
         });
         plan_parts.push("README.md".into());
     }
@@ -82,6 +84,8 @@ fn build_plan(
             content: Some(
                 "node_modules/\ndist/\nbuild/\n.next/\ncoverage/\n.env\n.env.*\n.DS_Store\n.target/\n".into(),
             ),
+            patch: None,
+            base_sha256: None,
         });
         plan_parts.push(".gitignore".into());
     }
@@ -91,6 +95,8 @@ fn build_plan(
             kind: ActionKind::CreateFile,
             path: "tests/README.md".to_string(),
             content: Some("# Тесты\n\nДобавьте unit- и интеграционные тесты.\n".into()),
+            patch: None,
+            base_sha256: None,
         });
         plan_parts.push("tests/README.md".into());
     }
@@ -102,6 +108,8 @@ fn build_plan(
             content: Some(
                 "root = true\n\n[*]\nindent_style = space\nindent_size = 2\nend_of_line = lf\n".into(),
             ),
+            patch: None,
+            base_sha256: None,
         });
         plan_parts.push(".editorconfig".into());
     }
@@ -226,6 +234,8 @@ pub async fn agentic_run(window: Window, payload: AgenticRunRequest) -> AgenticR
             ApplyOptions {
                 auto_check: false,
                 user_confirmed: true,
+                protocol_version_override: None,
+                fallback_attempted: false,
             },
         )
         .await;

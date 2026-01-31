@@ -93,6 +93,29 @@ npm run tauri dev
 
 Если `PAPAYU_LLM_API_URL` не задан или пуст, используется встроенная эвристика (README, .gitignore, LICENSE, .env.example по правилам).
 
+### Online Research (опционально)
+
+Команда `research_answer_cmd`: поиск через Tavily → fetch страниц (SSRF-safe) → LLM summarize с источниками. Вызов через `researchAnswer(query)` на фронте.
+
+**Env:**
+- **`PAPAYU_ONLINE_RESEARCH=1`** — включить режим (по умолчанию выключен)
+- **`PAPAYU_TAVILY_API_KEY`** — API-ключ Tavily (tavily.com)
+- **`PAPAYU_ONLINE_MODEL`** — модель для summarize (по умолчанию из PAPAYU_LLM_MODEL)
+- **`PAPAYU_ONLINE_MAX_SOURCES`** — макс. результатов поиска (default 5)
+- **`PAPAYU_ONLINE_MAX_PAGES`** — макс. страниц для fetch (default 4)
+- **`PAPAYU_ONLINE_PAGE_MAX_BYTES`** — лимит размера страницы (default 200000)
+- **`PAPAYU_ONLINE_TIMEOUT_SEC`** — таймаут fetch (default 20)
+
+**Use as context:** после online research кнопка «Use as context (once)» добавляет ответ в следующий PLAN/APPLY. Лимиты:
+- **`PAPAYU_ONLINE_CONTEXT_MAX_CHARS`** — макс. символов online summary (default 8000)
+- **`PAPAYU_ONLINE_CONTEXT_MAX_SOURCES`** — макс. источников (default 10)
+- Online summary режется первым при превышении `PAPAYU_CONTEXT_MAX_TOTAL_CHARS`.
+
+**Auto-use (X4):**
+- **`PAPAYU_ONLINE_AUTO_USE_AS_CONTEXT=1`** — если включено, online research результат автоматически используется как контекст для повторного `proposeActions` без участия пользователя (default 0).
+- Защита от циклов: максимум 1 auto-chain на один запрос (goal).
+- UI: при auto-use показывается метка "Auto-used ✓"; кнопка "Disable auto-use" отключает для текущего проекта (сохраняется в localStorage).
+
 ### Тестирование
 
 - **Юнит-тесты (Rust)** — тесты для `detect_project_type`, `get_project_limits`, `is_protected_file`, `is_text_allowed` (см. `src-tauri/src/commands/get_project_profile.rs` и `apply_actions_tx.rs`). Запуск: `cd src-tauri && cargo test`.

@@ -210,17 +210,34 @@ pub fn normalize_content_for_write(content: &str, _path: &Path) -> String {
     s
 }
 
+fn protocol_version(override_version: Option<u32>) -> u32 {
+    crate::protocol::protocol_version(override_version)
+}
+
 /// Apply a single action to disk (v2.3.3: for atomic apply + rollback on first failure).
-pub fn apply_one_action(root: &Path, action: &Action) -> Result<(), String> {
+pub fn apply_one_action(root: &Path, action: &Action, protocol_override: Option<u32>) -> Result<(), String> {
     let full = safe_join(root, &action.path)?;
     match action.kind {
         ActionKind::CreateFile | ActionKind::UpdateFile => {
+            // v2: UPDATE_FILE запрещён для существующих файлов
+            if action.kind == ActionKind::UpdateFile
+                && protocol_version(protocol_override) == 2
+                && full.is_file()
+            {
+                return Err(format!(
+                    "ERR_V2_UPDATE_EXISTING_FORBIDDEN: UPDATE_FILE path '{}' существует. В v2 используй PATCH_FILE.",
+                    action.path
+                ));
+            }
             if let Some(p) = full.parent() {
                 fs::create_dir_all(p).map_err(|e| e.to_string())?;
             }
             let content = action.content.as_deref().unwrap_or("");
             let normalized = normalize_content_for_write(content, &full);
             fs::write(&full, normalized).map_err(|e| e.to_string())?;
+        }
+        ActionKind::PatchFile => {
+            apply_patch_file_impl(root, &action.path, action)?;
         }
         ActionKind::CreateDir => {
             fs::create_dir_all(&full).map_err(|e| e.to_string())?;
@@ -239,14 +256,59 @@ pub fn apply_one_action(root: &Path, action: &Action) -> Result<(), String> {
     Ok(())
 }
 
-/// Порядок применения: CREATE_DIR → CREATE_FILE/UPDATE_FILE → DELETE_FILE → DELETE_DIR.
+fn apply_patch_file_impl(root: &Path, path: &str, action: &Action) -> Result<(), String> {
+    use crate::patch::{
+        apply_unified_diff_to_text, is_valid_sha256_hex, looks_like_unified_diff,
+        normalize_lf_with_trailing_newline, sha256_hex,
+    };
+    let patch_text = action.patch.as_deref().unwrap_or("");
+    let base_sha256 = action.base_sha256.as_deref().unwrap_or("");
+    if !looks_like_unified_diff(patch_text) {
+        return Err("ERR_PATCH_NOT_UNIFIED: patch is not unified diff".into());
+    }
+    if !is_valid_sha256_hex(base_sha256) {
+        return Err("ERR_BASE_SHA256_INVALID: base_sha256 invalid (64 hex chars)".into());
+    }
+    let full = safe_join(root, path)?;
+    if !full.is_file() {
+        return Err(format!(
+            "ERR_BASE_MISMATCH: file not found for PATCH_FILE '{}'",
+            path
+        ));
+    }
+    let old_bytes = fs::read(&full).map_err(|e| format!("ERR_IO: {}", e))?;
+    let old_sha = sha256_hex(&old_bytes);
+    if old_sha != base_sha256 {
+        return Err(format!(
+            "ERR_BASE_MISMATCH: base mismatch: have {}, want {}",
+            old_sha, base_sha256
+        ));
+    }
+    let old_text = String::from_utf8(old_bytes)
+        .map_err(|_| String::from("ERR_NON_UTF8_FILE: PATCH_FILE requires utf-8"))?;
+    let mut new_text = apply_unified_diff_to_text(&old_text, patch_text)
+        .map_err(|_| String::from("ERR_PATCH_APPLY_FAILED: could not apply patch"))?;
+    let normalize_eol = std::env::var("PAPAYU_NORMALIZE_EOL")
+        .map(|s| s.trim().to_lowercase() == "lf")
+        .unwrap_or(false);
+    if normalize_eol {
+        new_text = normalize_lf_with_trailing_newline(&new_text);
+    }
+    if let Some(p) = full.parent() {
+        fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    fs::write(&full, new_text).map_err(|e| e.to_string())
+}
+
+/// Порядок применения: CREATE_DIR → CREATE_FILE/UPDATE_FILE → PATCH_FILE → DELETE_FILE → DELETE_DIR.
 pub fn sort_actions_for_apply(actions: &mut [Action]) {
     fn order(k: &ActionKind) -> u8 {
         match k {
             ActionKind::CreateDir => 0,
             ActionKind::CreateFile | ActionKind::UpdateFile => 1,
-            ActionKind::DeleteFile => 2,
-            ActionKind::DeleteDir => 3,
+            ActionKind::PatchFile => 2,
+            ActionKind::DeleteFile => 3,
+            ActionKind::DeleteDir => 4,
         }
     }
     actions.sort_by_key(|a| (order(&a.kind), a.path.clone()));
@@ -258,7 +320,7 @@ pub fn apply_actions_to_disk(root: &Path, actions: &[Action]) -> Result<(), Stri
     let mut sorted: Vec<Action> = actions.to_vec();
     sort_actions_for_apply(&mut sorted);
     for a in &sorted {
-        apply_one_action(root, a)?;
+        apply_one_action(root, a, None)?;
     }
     Ok(())
 }

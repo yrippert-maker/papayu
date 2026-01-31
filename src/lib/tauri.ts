@@ -32,6 +32,8 @@ export interface RunBatchPayload {
 export interface ApplyActionsTxOptions {
   auto_check: boolean;
   user_confirmed: boolean;
+  protocol_version_override?: number | null;
+  fallback_attempted?: boolean;
 }
 
 export interface ProjectItem {
@@ -152,6 +154,9 @@ export interface AgentPlanResult {
   error_code?: string;
   plan_json?: string;
   plan_context?: string;
+  protocol_version_used?: number | null;
+  online_fallback_suggested?: string | null;
+  online_context_used?: boolean | null;
 }
 
 export async function proposeActions(
@@ -161,7 +166,16 @@ export async function proposeActions(
   designStyle?: string | null,
   trendsContext?: string | null,
   lastPlanJson?: string | null,
-  lastContext?: string | null
+  lastContext?: string | null,
+  applyErrorCode?: string | null,
+  applyErrorValidatedJson?: string | null,
+  applyRepairAttempt?: number | null,
+  applyErrorStage?: string | null,
+  onlineFallbackAttempted?: boolean | null,
+  onlineContextMd?: string | null,
+  onlineContextSources?: string[] | null,
+  onlineFallbackExecuted?: boolean | null,
+  onlineFallbackReason?: string | null
 ): Promise<AgentPlanResult> {
   return invoke<AgentPlanResult>("propose_actions", {
     path,
@@ -171,6 +185,15 @@ export async function proposeActions(
     trendsContext: trendsContext ?? null,
     lastPlanJson: lastPlanJson ?? null,
     lastContext: lastContext ?? null,
+    applyErrorCode: applyErrorCode ?? null,
+    applyErrorValidatedJson: applyErrorValidatedJson ?? null,
+    applyRepairAttempt: applyRepairAttempt ?? null,
+    applyErrorStage: applyErrorStage ?? null,
+    onlineFallbackAttempted: onlineFallbackAttempted ?? null,
+    onlineContextMd: onlineContextMd ?? null,
+    onlineContextSources: onlineContextSources ?? null,
+    onlineFallbackExecuted: onlineFallbackExecuted ?? null,
+    onlineFallbackReason: onlineFallbackReason ?? null,
   });
 }
 
@@ -218,4 +241,27 @@ export async function exportSettings(): Promise<string> {
 /** Import settings from JSON string */
 export async function importSettings(json: string, mode?: "replace" | "merge"): Promise<ImportResult> {
   return invoke<ImportResult>("import_settings", { json, mode: mode ?? "merge" });
+}
+
+/** Еженедельный отчёт: агрегация трасс и генерация через LLM */
+export async function analyzeWeeklyReports(
+  projectPath: string,
+  from?: string | null,
+  to?: string | null
+): Promise<import("./types").WeeklyReportResult> {
+  return invoke("analyze_weekly_reports_cmd", {
+    projectPath,
+    from: from ?? null,
+    to: to ?? null,
+  });
+}
+
+/** Сохранить отчёт в docs/reports/weekly_YYYY-MM-DD.md */
+export async function saveReport(projectPath: string, reportMd: string, date?: string | null): Promise<string> {
+  return invoke("save_report_cmd", { projectPath, reportMd, date: date ?? null });
+}
+
+/** Online research: поиск Tavily + fetch + LLM summarize. Требует PAPAYU_ONLINE_RESEARCH=1, PAPAYU_TAVILY_API_KEY. */
+export async function researchAnswer(query: string): Promise<import("./types").OnlineAnswer> {
+  return invoke("research_answer_cmd", { query });
 }

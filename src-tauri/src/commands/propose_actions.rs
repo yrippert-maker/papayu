@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use crate::online_research;
 use crate::types::{Action, ActionKind, AgentPlan};
 use tauri::Manager;
 
@@ -27,6 +28,17 @@ fn has_license(root: &str) -> bool {
 }
 
 /// Триггеры перехода Plan→Apply (пользователь подтвердил план).
+/// Извлекает префикс ошибки (ERR_XXX или LLM_REQUEST_TIMEOUT) из сообщения.
+fn extract_error_code(msg: &str) -> &str {
+    if let Some(colon) = msg.find(':') {
+        let prefix = msg[..colon].trim();
+        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return prefix;
+        }
+    }
+    ""
+}
+
 const APPLY_TRIGGERS: &[&str] = &[
     "ok", "ок", "apply", "применяй", "применить", "делай", "да", "yes", "go", "вперёд",
 ];
@@ -41,6 +53,15 @@ pub async fn propose_actions(
     trends_context: Option<String>,
     last_plan_json: Option<String>,
     last_context: Option<String>,
+    apply_error_code: Option<String>,
+    apply_error_validated_json: Option<String>,
+    apply_repair_attempt: Option<u32>,
+    apply_error_stage: Option<String>,
+    online_fallback_attempted: Option<bool>,
+    online_context_md: Option<String>,
+    online_context_sources: Option<Vec<String>>,
+    online_fallback_executed: Option<bool>,
+    online_fallback_reason: Option<String>,
 ) -> AgentPlan {
     let goal_trim = user_goal.trim();
     let goal_lower = goal_trim.to_lowercase();
@@ -54,6 +75,9 @@ pub async fn propose_actions(
             error_code: Some("PATH_NOT_FOUND".into()),
             plan_json: None,
             plan_context: None,
+            protocol_version_used: None,
+            online_fallback_suggested: None,
+            online_context_used: None,
         };
     }
 
@@ -66,10 +90,13 @@ pub async fn propose_actions(
                     summary: String::new(),
                     actions: vec![],
                     error: Some(format!("app data dir: {}", e)),
-                    error_code: Some("APP_DATA_DIR".into()),
-                    plan_json: None,
-                    plan_context: None,
-                };
+                error_code: Some("APP_DATA_DIR".into()),
+                plan_json: None,
+                plan_context: None,
+                protocol_version_used: None,
+                online_fallback_suggested: None,
+                online_context_used: None,
+            };
             }
         };
         let user_prefs_path = app_data.join("papa-yu").join("preferences.json");
@@ -101,6 +128,24 @@ pub async fn propose_actions(
 
         let last_plan_ref = last_plan_json.as_deref();
         let last_ctx_ref = last_context.as_deref();
+        let apply_error = apply_error_code.as_deref().and_then(|code| {
+            apply_error_validated_json.as_deref().map(|json| (code, json))
+        });
+        let force_protocol = {
+            let code = apply_error_code.as_deref().unwrap_or("");
+            let repair_attempt = apply_repair_attempt.unwrap_or(0);
+            if llm_planner::is_protocol_fallback_applicable(code, repair_attempt) {
+                let stage = apply_error_stage.as_deref().unwrap_or("apply");
+                eprintln!("[trace] PROTOCOL_FALLBACK from=v2 to=v1 reason={} stage={}", code, stage);
+                Some(1u32)
+            } else {
+                None
+            }
+        };
+        let apply_error_stage_ref = apply_error_stage.as_deref();
+        let online_md_ref = online_context_md.as_deref();
+        let online_sources_ref: Option<&[String]> = online_context_sources.as_deref();
+        let online_reason_ref = online_fallback_reason.as_deref();
         return match llm_planner::plan(
             &user_prefs_path,
             &project_prefs_path,
@@ -113,19 +158,42 @@ pub async fn propose_actions(
             output_format_override,
             last_plan_ref,
             last_ctx_ref,
+            apply_error,
+            force_protocol,
+            apply_error_stage_ref,
+            apply_repair_attempt,
+            online_md_ref,
+            online_sources_ref,
+            online_fallback_executed,
+            online_reason_ref,
         )
         .await
         {
             Ok(plan) => plan,
-            Err(e) => AgentPlan {
-                ok: false,
-                summary: String::new(),
-                actions: vec![],
-                error: Some(e),
-                error_code: Some("LLM_ERROR".into()),
-                plan_json: None,
-                plan_context: None,
-            },
+            Err(e) => {
+                let error_code_str = extract_error_code(&e).to_string();
+                let online_suggested = online_research::maybe_online_fallback(
+                    Some(&e),
+                    online_research::is_online_research_enabled(),
+                    online_fallback_attempted.unwrap_or(false),
+                )
+                .then_some(goal_trim.to_string());
+                if online_suggested.is_some() {
+                    eprintln!("[trace] ONLINE_FALLBACK_SUGGESTED error_code={} query_len={}", error_code_str, goal_trim.len());
+                }
+                AgentPlan {
+                    ok: false,
+                    summary: String::new(),
+                    actions: vec![],
+                    error: Some(e),
+                    error_code: Some(if error_code_str.is_empty() { "LLM_ERROR".into() } else { error_code_str }),
+                    plan_json: None,
+                    plan_context: None,
+                    protocol_version_used: None,
+                    online_fallback_suggested: online_suggested,
+                    online_context_used: None,
+                }
+            }
         };
     }
 
@@ -149,6 +217,9 @@ pub async fn propose_actions(
             error_code: None,
             plan_json: None,
             plan_context: None,
+            protocol_version_used: None,
+            online_fallback_suggested: None,
+            online_context_used: None,
         };
     }
 
@@ -172,6 +243,8 @@ pub async fn propose_actions(
                 "# PAPA YU Project\n\n## Цель\n{}\n\n## Как запустить\n- (добавить)\n\n## Структура\n- (добавить)\n",
                 user_goal
             )),
+            patch: None,
+            base_sha256: None,
         });
         summary.push("Добавлю README.md".into());
     }
@@ -183,6 +256,8 @@ pub async fn propose_actions(
             content: Some(
                 "node_modules/\ndist/\nbuild/\n.DS_Store\n.env\n.env.*\ncoverage/\n.target/\n".into(),
             ),
+            patch: None,
+            base_sha256: None,
         });
         summary.push("Добавлю .gitignore".into());
     }
@@ -202,6 +277,8 @@ pub async fn propose_actions(
                 content: Some(
                     "\"\"\"Точка входа. Запуск: python main.py\"\"\"\n\ndef main() -> None:\n    print(\"Hello\")\n\n\nif __name__ == \"__main__\":\n    main()\n".into(),
                 ),
+                patch: None,
+                base_sha256: None,
             });
             summary.push("Добавлю main.py (скелет)".into());
         }
@@ -212,6 +289,8 @@ pub async fn propose_actions(
             kind: ActionKind::CreateFile,
             path: "LICENSE".into(),
             content: Some("UNLICENSED\n".into()),
+            patch: None,
+            base_sha256: None,
         });
         summary.push("Добавлю LICENSE (пометка UNLICENSED)".into());
     }
@@ -221,6 +300,8 @@ pub async fn propose_actions(
             kind: ActionKind::CreateFile,
             path: ".env.example".into(),
             content: Some("VITE_API_URL=\n# пример, без секретов\n".into()),
+            patch: None,
+            base_sha256: None,
         });
         summary.push("Добавлю .env.example (без секретов)".into());
     }
@@ -234,6 +315,9 @@ pub async fn propose_actions(
             error_code: None,
             plan_json: None,
             plan_context: None,
+            protocol_version_used: None,
+            online_fallback_suggested: None,
+            online_context_used: None,
         };
     }
 
@@ -245,5 +329,8 @@ pub async fn propose_actions(
         error_code: None,
         plan_json: None,
         plan_context: None,
+        protocol_version_used: None,
+        online_fallback_suggested: None,
+        online_context_used: None,
     }
 }

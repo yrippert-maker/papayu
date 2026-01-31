@@ -1,6 +1,7 @@
 [package]
 name = "papa-yu"
 version = "2.4.4"
+default-run = "papa-yu"
 edition = "2021"
 description = "PAPA YU — анализ и исправление проектов"
 
@@ -23,6 +24,10 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 jsonschema = "0.18"
 sha2 = "0.10"
+hex = "0.4"
+diffy = "0.4"
+url = "2"
+scraper = "0.20"
 
 [dev-dependencies]
 tempfile = "3"

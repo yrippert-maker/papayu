@@ -19,6 +19,7 @@ mod trends;
 mod undo_last;
 mod undo_last_tx;
 mod undo_status;
+mod weekly_report;
 
 pub use agentic_run::agentic_run;
 pub use get_project_profile::get_project_profile;
@@ -38,3 +39,4 @@ pub use undo_last::{get_undo_redo_state_cmd, undo_available, undo_last};
 pub use undo_last_tx::undo_last_tx;
 pub use undo_status::undo_status;
 pub use settings_export::{export_settings, import_settings};
+pub use weekly_report::{analyze_weekly_reports, save_report_to_file, WeeklyReportResult};

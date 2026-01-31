@@ -25,16 +25,12 @@ use uuid::Uuid;
 const SCHEMA_RAW: &str = include_str!("../../config/llm_response_schema.json");
 const SCHEMA_V2_RAW: &str = include_str!("../../config/llm_response_schema_v2.json");
 
-fn protocol_version() -> u32 {
-    std::env::var("PAPAYU_PROTOCOL_VERSION")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .filter(|v| *v == 1 || *v == 2)
-        .unwrap_or(1)
+fn protocol_version(override_version: Option<u32>) -> u32 {
+    crate::protocol::protocol_version(override_version)
 }
 
 pub(crate) fn schema_hash() -> String {
-    schema_hash_for_version(protocol_version())
+    schema_hash_for_version(protocol_version(None))
 }
 
 pub(crate) fn schema_hash_for_version(version: u32) -> String {
@@ -49,7 +45,7 @@ pub(crate) fn schema_hash_for_version(version: u32) -> String {
 }
 
 fn current_schema_version() -> u32 {
-    protocol_version()
+    protocol_version(None)
 }
 
 #[derive(serde::Serialize)]
@@ -270,14 +266,70 @@ pub const FIX_PLAN_SYSTEM_PROMPT: &str = r#"Ты — инженерный асс
 - context_requests: [{ type: "read_file"|"search"|"logs"|"env", path?, start_line?, end_line?, query?, glob?, source?, last_n? }]
 - memory_patch: object (только ключи из whitelist: user.*, project.*)"#;
 
-/// Возвращает system prompt по режиму (PAPAYU_LLM_MODE: chat | fixit | fix-plan).
+/// System prompt v2: Protocol v2 (PATCH_FILE, base_sha256, object-only).
+pub const FIX_PLAN_SYSTEM_PROMPT_V2: &str = r#"Ты — инженерный ассистент внутри программы, работающей по Protocol v2.
+
+Формат ответа:
+- Всегда возвращай ТОЛЬКО валидный JSON, строго по JSON Schema v2.
+- Корневой объект, поле "actions" обязательно.
+- Никаких комментариев, пояснений или текста вне JSON.
+
+Правила изменений файлов:
+- UPDATE_FILE запрещён для существующих файлов — используй PATCH_FILE.
+- Для изменения существующего файла ИСПОЛЬЗУЙ ТОЛЬКО PATCH_FILE.
+- PATCH_FILE ОБЯЗАН содержать:
+  - base_sha256 — точный sha256 текущей версии файла (из контекста)
+  - patch — unified diff
+- Если base_sha256 не совпадает или контекста недостаточно — верни PLAN и запроси context_requests.
+
+Режимы:
+- PLAN: actions ДОЛЖЕН быть пустым массивом [], summary обязателен.
+- APPLY: если изменений нет — actions=[], summary НАЧИНАЕТСЯ с "NO_CHANGES:"; иначе actions непустой.
+
+Контекст:
+- Для каждого файла предоставляется его sha256 в формате FILE[path] (sha256=...).
+- base_sha256 бери из строки FILE[path] (sha256=...) в контексте.
+
+PATCH_FILE правила:
+- Патч должен быть минимальным: меняй только нужные строки.
+- Каждый @@ hunk должен иметь 1–3 строки контекста до/после изменения.
+- Не делай массовых форматирований и EOL-изменений.
+
+Когда нельзя PATCH_FILE:
+- Если файл не UTF-8 или слишком большой/генерируемый — верни PLAN (actions=[]) и запроси альтернативу.
+
+Запреты:
+- Не добавляй новых полей. Не изменяй защищённые пути. Не придумывай base_sha256."#;
+
+/// Возвращает system prompt по режиму и protocol_version.
 fn get_system_prompt_for_mode() -> &'static str {
     let mode = std::env::var("PAPAYU_LLM_MODE").unwrap_or_else(|_| "chat".into());
+    let use_v2 = protocol_version(None) == 2;
     match mode.trim().to_lowercase().as_str() {
-        "fixit" | "fix-it" | "fix_it" => FIXIT_SYSTEM_PROMPT,
-        "fix-plan" | "fix_plan" => FIX_PLAN_SYSTEM_PROMPT,
+        "fixit" | "fix-it" | "fix_it" => {
+            if use_v2 {
+                FIX_PLAN_SYSTEM_PROMPT_V2
+            } else {
+                FIXIT_SYSTEM_PROMPT
+            }
+        }
+        "fix-plan" | "fix_plan" => {
+            if use_v2 {
+                FIX_PLAN_SYSTEM_PROMPT_V2
+            } else {
+                FIX_PLAN_SYSTEM_PROMPT
+            }
+        }
         _ => CHAT_SYSTEM_PROMPT,
     }
+}
+
+/// Проверяет, нужен ли fallback на v1 для APPLY.
+/// repair_attempt: 0 = первый retry (repair-first для PATCH_APPLY/UPDATE_EXISTING), 1 = repair уже пробовали.
+pub fn is_protocol_fallback_applicable(apply_error_code: &str, repair_attempt: u32) -> bool {
+    crate::protocol::protocol_default() == 2
+        && crate::protocol::protocol_fallback_enabled()
+        && crate::protocol::should_fallback_to_v1(apply_error_code, repair_attempt)
 }
 
 /// Проверяет, включён ли LLM-планировщик (задан URL).
@@ -423,9 +475,74 @@ const REPAIR_PROMPT_PLAN_ACTIONS_MUST_BE_EMPTY: &str = r#"
 Верни объект с "actions": [] и "summary" (диагноз + план шагов).
 "#;
 
+/// v2 repair hints для PATCH_FILE (для repair flow / UI)
+#[allow(dead_code)]
+const REPAIR_ERR_PATCH_NOT_UNIFIED: &str = "ERR_PATCH_NOT_UNIFIED: patch должен быть unified diff (---/+++ и @@ hunks)";
+#[allow(dead_code)]
+const REPAIR_ERR_BASE_MISMATCH: &str = "ERR_BASE_MISMATCH: файл изменился, верни PLAN и запроси read_file заново";
+#[allow(dead_code)]
+const REPAIR_ERR_PATCH_APPLY_FAILED: &str = "ERR_PATCH_APPLY_FAILED: патч не применяется, верни PLAN и запроси больше контекста вокруг изменения";
+#[allow(dead_code)]
+const REPAIR_ERR_V2_UPDATE_EXISTING_FORBIDDEN: &str = "ERR_V2_UPDATE_EXISTING_FORBIDDEN: сгенерируй PATCH_FILE вместо UPDATE_FILE для существующего файла";
+
+/// Шаблон для repair с подстановкой path и sha256 (ERR_BASE_SHA256_NOT_FROM_CONTEXT).
+fn repair_err_base_sha256_not_from_context(path: &str, sha256: &str) -> String {
+    format!(
+        r#"ERR_BASE_SHA256_NOT_FROM_CONTEXT:
+Для PATCH_FILE по пути "{}" base_sha256 должен быть ровно sha256 из контекста.
+Используй это значение base_sha256: {}
+
+Верни ТОЛЬКО валидный JSON по схеме v2.
+Для изменения файла используй PATCH_FILE с base_sha256={} и unified diff в поле patch.
+НЕ добавляй новых полей."#,
+        path, sha256, sha256
+    )
+}
+
+/// Строит repair prompt с конкретным sha256 из контекста (v2 + PATCH_FILE).
+/// Возвращает Some((prompt, paths)), если нашли sha для PATCH_FILE с неверным base_sha256.
+pub fn build_v2_patch_repair_prompt_with_sha(
+    last_plan_context: &str,
+    validated_json: &serde_json::Value,
+) -> Option<(String, Vec<String>)> {
+    use crate::context;
+    use crate::patch;
+
+    if protocol_version(None) != 2 {
+        return None;
+    }
+    let actions = validated_json
+        .get("proposed_changes")
+        .and_then(|pc| pc.get("actions"))
+        .or_else(|| validated_json.get("actions"))
+        .and_then(|a| a.as_array())?;
+    let sha_map = context::extract_file_sha256_from_context(last_plan_context);
+    for a in actions {
+        let obj = a.as_object()?;
+        let kind = obj.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        if kind.to_uppercase() != "PATCH_FILE" {
+            continue;
+        }
+        let path = obj.get("path").and_then(|p| p.as_str())?;
+        let sha_ctx = sha_map.get(path)?;
+        let base = obj.get("base_sha256").and_then(|b| b.as_str());
+        let needs_repair = match base {
+            None => true,
+            Some(b) if !patch::is_valid_sha256_hex(b) => true,
+            Some(b) if b != sha_ctx.as_str() => true,
+            _ => false,
+        };
+        if needs_repair {
+            let prompt = repair_err_base_sha256_not_from_context(path, sha_ctx);
+            return Some((prompt, vec![path.to_string()]));
+        }
+    }
+    None
+}
+
 /// Компилирует JSON Schema для локальной валидации (v1 или v2 по protocol_version).
 fn compiled_response_schema() -> Option<JSONSchema> {
-    let raw = if protocol_version() == 2 {
+    let raw = if protocol_version(None) == 2 {
         SCHEMA_V2_RAW
     } else {
         SCHEMA_RAW
@@ -443,6 +560,18 @@ fn validate_json_against_schema(value: &serde_json::Value) -> Result<(), String>
         let msgs: Vec<String> = errs.map(|e| e.to_string()).collect();
         format!("JSON schema validation failed: {}", msgs.join("; "))
     })
+}
+
+/// Валидация против схемы конкретной версии (для golden traces).
+#[allow(dead_code)]
+fn compiled_schema_for_version(version: u32) -> Option<JSONSchema> {
+    let raw = if version == 2 {
+        SCHEMA_V2_RAW
+    } else {
+        SCHEMA_RAW
+    };
+    let schema: serde_json::Value = serde_json::from_str(raw).ok()?;
+    JSONSchema::options().compile(&schema).ok()
 }
 
 /// Извлекает JSON из ответа (убирает обёртку ```json ... ``` при наличии).
@@ -521,7 +650,7 @@ fn validate_path(path: &str, idx: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Проверяет конфликты действий на один path (CREATE+UPDATE, DELETE+UPDATE и т.д.).
+/// Проверяет конфликты действий на один path (CREATE+UPDATE, PATCH+UPDATE, DELETE+UPDATE и т.д.).
 fn validate_action_conflicts(actions: &[Action]) -> Result<(), String> {
     use std::collections::HashMap;
     let mut by_path: HashMap<String, Vec<ActionKind>> = HashMap::new();
@@ -532,11 +661,25 @@ fn validate_action_conflicts(actions: &[Action]) -> Result<(), String> {
     for (path, kinds) in by_path {
         let has_create = kinds.contains(&ActionKind::CreateFile);
         let has_update = kinds.contains(&ActionKind::UpdateFile);
+        let has_patch = kinds.contains(&ActionKind::PatchFile);
         let has_delete_file = kinds.contains(&ActionKind::DeleteFile);
         let has_delete_dir = kinds.contains(&ActionKind::DeleteDir);
         if has_create && has_update {
             return Err(format!(
                 "ERR_ACTION_CONFLICT: path '{}' has both CREATE_FILE and UPDATE_FILE",
+                path
+            ));
+        }
+        // PATCH_FILE конфликтует с CREATE/UPDATE/DELETE на тот же path
+        if has_patch && (has_create || has_update) {
+            return Err(format!(
+                "ERR_ACTION_CONFLICT: path '{}' has PATCH_FILE and CREATE/UPDATE",
+                path
+            ));
+        }
+        if has_patch && (has_delete_file || has_delete_dir) {
+            return Err(format!(
+                "ERR_ACTION_CONFLICT: path '{}' has PATCH_FILE and DELETE",
                 path
             ));
         }
@@ -554,15 +697,15 @@ fn validate_action_conflicts(actions: &[Action]) -> Result<(), String> {
 fn extract_files_read_from_plan_context(plan_context: &str) -> std::collections::HashSet<String> {
     let mut paths = std::collections::HashSet::new();
     let mut search = plan_context;
-    // FILE[path]: — из fulfill_context_requests
+    // FILE[path]: или FILE[path] (sha256=...): — из fulfill_context_requests
     while let Some(start) = search.find("FILE[") {
         search = &search[start + 5..];
-        if let Some(end) = search.find("]:") {
+        if let Some(end) = search.find(']') {
             let path = search[..end].trim().replace('\\', "/");
             if !path.is_empty() {
                 paths.insert(path);
             }
-            search = &search[end + 2..];
+            search = &search[end + 1..];
         } else {
             break;
         }
@@ -584,7 +727,34 @@ fn extract_files_read_from_plan_context(plan_context: &str) -> std::collections:
     paths
 }
 
-/// APPLY-режим: каждый UPDATE_FILE должен ссылаться на файл, прочитанный в plan.
+/// v2: UPDATE_FILE запрещён для существующих файлов — используй PATCH_FILE.
+fn validate_v2_update_existing_forbidden(
+    project_root: &std::path::Path,
+    actions: &[Action],
+) -> Result<(), String> {
+    if protocol_version(None) != 2 {
+        return Ok(());
+    }
+    for (i, a) in actions.iter().enumerate() {
+        if a.kind != ActionKind::UpdateFile {
+            continue;
+        }
+        let p = match crate::tx::safe_join(project_root, &a.path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if p.is_file() {
+            return Err(format!(
+                "ERR_V2_UPDATE_EXISTING_FORBIDDEN: UPDATE_FILE path '{}' существует (actions[{}]). \
+                В v2 используй PATCH_FILE для существующих файлов. Сгенерируй PATCH_FILE.",
+                a.path, i
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// APPLY-режим: UPDATE_FILE и PATCH_FILE должны ссылаться на файл, прочитанный в plan.
 fn validate_update_without_base(
     actions: &[Action],
     plan_context: Option<&str>,
@@ -592,13 +762,18 @@ fn validate_update_without_base(
     let Some(ctx) = plan_context else { return Ok(()) };
     let read_paths = extract_files_read_from_plan_context(ctx);
     for (i, a) in actions.iter().enumerate() {
-        if a.kind == ActionKind::UpdateFile {
+        if a.kind == ActionKind::UpdateFile || a.kind == ActionKind::PatchFile {
             let path = a.path.replace('\\', "/").trim().to_string();
             if !read_paths.contains(&path) {
+                let kind_str = if a.kind == ActionKind::PatchFile {
+                    "PATCH_FILE"
+                } else {
+                    "UPDATE_FILE"
+                };
                 return Err(format!(
-                    "ERR_UPDATE_WITHOUT_BASE: UPDATE_FILE path '{}' not read in plan (actions[{}]). \
+                    "ERR_UPDATE_WITHOUT_BASE: {} path '{}' not read in plan (actions[{}]). \
                     В PLAN-цикле должен быть context_requests.read_file для этого path.",
-                    path, i
+                    kind_str, path, i
                 ));
             }
         }
@@ -673,6 +848,29 @@ fn validate_actions(actions: &[Action]) -> Result<(), String> {
                 validate_content(content, i)?;
                 total_bytes += content.len();
             }
+            ActionKind::PatchFile => {
+                let patch = a.patch.as_deref().unwrap_or("");
+                let base = a.base_sha256.as_deref().unwrap_or("");
+                if patch.trim().is_empty() {
+                    return Err(format!(
+                        "actions[{}].patch required for PATCH_FILE (ERR_PATCH_REQUIRED)",
+                        i
+                    ));
+                }
+                if !crate::patch::looks_like_unified_diff(patch) {
+                    return Err(format!(
+                        "actions[{}].patch is not unified diff (ERR_PATCH_NOT_UNIFIED)",
+                        i
+                    ));
+                }
+                if !crate::patch::is_valid_sha256_hex(base) {
+                    return Err(format!(
+                        "actions[{}].base_sha256 invalid (64 hex chars) (ERR_BASE_SHA256_INVALID)",
+                        i
+                    ));
+                }
+                total_bytes += a.patch.as_ref().map(|p| p.len()).unwrap_or(0);
+            }
             _ => {}
         }
     }
@@ -703,6 +901,7 @@ fn parse_actions_from_json(json_str: &str) -> Result<Vec<Action>, String> {
             "CREATE_FILE" => ActionKind::CreateFile,
             "CREATE_DIR" => ActionKind::CreateDir,
             "UPDATE_FILE" => ActionKind::UpdateFile,
+            "PATCH_FILE" => ActionKind::PatchFile,
             "DELETE_FILE" => ActionKind::DeleteFile,
             "DELETE_DIR" => ActionKind::DeleteDir,
             _ => ActionKind::CreateFile,
@@ -712,11 +911,16 @@ fn parse_actions_from_json(json_str: &str) -> Result<Vec<Action>, String> {
             .and_then(|p| p.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("unknown_{}", i));
-        let content = obj
-            .get("content")
-            .and_then(|c| c.as_str())
-            .map(|s| s.to_string());
-        actions.push(Action { kind, path, content });
+        let content = obj.get("content").and_then(|c| c.as_str()).map(|s| s.to_string());
+        let patch = obj.get("patch").and_then(|p| p.as_str()).map(|s| s.to_string());
+        let base_sha256 = obj.get("base_sha256").and_then(|b| b.as_str()).map(|s| s.to_string());
+        actions.push(Action {
+            kind,
+            path,
+            content,
+            patch,
+            base_sha256,
+        });
     }
     Ok(actions)
 }
@@ -770,6 +974,7 @@ const MAX_CONTEXT_ROUNDS: u32 = 2;
 /// Автосбор контекста: env + project prefs в начало user message; при context_requests — до MAX_CONTEXT_ROUNDS раундов.
 /// output_format_override: "plan" | "apply" — для двухфазного Plan→Apply.
 /// last_plan_for_apply, last_context_for_apply: при переходе из Plan в Apply (user сказал "ok").
+/// apply_error_for_repair: (error_code, validated_json) при ретрае после ERR_BASE_MISMATCH/ERR_BASE_SHA256_INVALID.
 const DEFAULT_MAX_TOKENS: u32 = 16384;
 
 pub async fn plan(
@@ -784,9 +989,21 @@ pub async fn plan(
     output_format_override: Option<&str>,
     last_plan_for_apply: Option<&str>,
     last_context_for_apply: Option<&str>,
+    apply_error_for_repair: Option<(&str, &str)>,
+    force_protocol_version: Option<u32>,
+    apply_error_stage: Option<&str>,
+    apply_repair_attempt: Option<u32>,
+    online_context_md: Option<&str>,
+    online_context_sources: Option<&[String]>,
+    online_fallback_executed: Option<bool>,
+    online_fallback_reason: Option<&str>,
 ) -> Result<AgentPlan, String> {
     let trace_id = Uuid::new_v4().to_string();
+    let effective_protocol = force_protocol_version
+        .filter(|v| *v == 1 || *v == 2)
+        .unwrap_or_else(|| crate::protocol::protocol_default());
 
+    let _guard = crate::protocol::set_protocol_version(effective_protocol);
     let api_url = std::env::var("PAPAYU_LLM_API_URL").map_err(|_| "PAPAYU_LLM_API_URL not set")?;
     let api_url = api_url.trim();
     if api_url.is_empty() {
@@ -816,12 +1033,88 @@ pub async fn plan(
         project_root,
         &format!("{}\n{}", user_goal, report_json),
     );
-    let mut user_message = format!("{}{}{}", base_context, prompt_body, auto_from_message);
+    let rest_context = format!("{}{}{}", base_context, prompt_body, auto_from_message);
+    let mut online_block_result: Option<crate::online_research::OnlineBlockResult> = None;
+    let mut online_context_dropped = false;
+    let mut user_message = rest_context.clone();
+    if let Some(md) = online_context_md {
+        if !md.trim().is_empty() {
+            let max_chars = crate::online_research::online_context_max_chars();
+            let max_sources = crate::online_research::online_context_max_sources();
+            let rest_chars = rest_context.chars().count();
+            let max_total = context::context_max_total_chars();
+            let priority0_reserved = 4096usize;
+            let effective_max = crate::online_research::effective_online_max_chars(
+                rest_chars,
+                max_total,
+                priority0_reserved,
+            );
+            let effective_max = if effective_max > 0 {
+                effective_max.min(max_chars)
+            } else {
+                0
+            };
+            let sources: Vec<String> = online_context_sources
+                .map(|s| s.to_vec())
+                .unwrap_or_default();
+            if effective_max >= 512 {
+                let result = crate::online_research::build_online_context_block(
+                    md,
+                    &sources,
+                    effective_max,
+                    max_sources,
+                );
+                if !result.dropped {
+                    user_message = format!("{}{}", result.block, rest_context);
+                    online_block_result = Some(result);
+                } else {
+                    online_context_dropped = true;
+                }
+            } else {
+                online_context_dropped = true;
+            }
+        }
+    }
+    let mut repair_injected_paths: Vec<String> = Vec::new();
 
     // Переход Plan→Apply: инжектируем сохранённый план и контекст
     if output_format_override == Some("apply") {
         if let Some(plan_json) = last_plan_for_apply {
-            let mut apply_prompt = String::from("\n\n--- РЕЖИМ APPLY ---\nПользователь подтвердил план. Применяй изменения согласно плану ниже. Верни actions с конкретными правками файлов.\n\nПЛАН:\n");
+            let mut apply_prompt = String::new();
+            // Repair после ERR_BASE_MISMATCH/ERR_BASE_SHA256_INVALID: подставляем sha256 из контекста
+            if let Some((code, validated_json_str)) = apply_error_for_repair {
+                let is_base_error = code == "ERR_BASE_MISMATCH" || code == "ERR_BASE_SHA256_INVALID";
+                if is_base_error {
+                    if let Some(ctx) = last_context_for_apply {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(validated_json_str) {
+                            if let Some((repair, paths)) = build_v2_patch_repair_prompt_with_sha(ctx, &val) {
+                                repair_injected_paths = paths;
+                                apply_prompt.push_str("\n\n--- REPAIR (ERR_BASE_SHA256_NOT_FROM_CONTEXT) ---\n");
+                                apply_prompt.push_str(&repair);
+                                apply_prompt.push_str("\n\nRaw output предыдущего ответа:\n");
+                                apply_prompt.push_str(validated_json_str);
+                                apply_prompt.push_str("\n\n");
+                            }
+                        }
+                    }
+                }
+                // Repair-first для ERR_PATCH_APPLY_FAILED и ERR_V2_UPDATE_EXISTING_FORBIDDEN (без fallback)
+                if force_protocol_version != Some(1)
+                    && (code == "ERR_PATCH_APPLY_FAILED" || code == "ERR_V2_UPDATE_EXISTING_FORBIDDEN")
+                {
+                    if code == "ERR_PATCH_APPLY_FAILED" {
+                        apply_prompt.push_str("\n\n--- REPAIR (ERR_PATCH_APPLY_FAILED) ---\n");
+                        apply_prompt.push_str("Увеличь контекст hunks до 3 строк, не меняй соседние блоки. Верни PATCH_FILE с исправленным patch.\n\n");
+                    } else if code == "ERR_V2_UPDATE_EXISTING_FORBIDDEN" {
+                        apply_prompt.push_str("\n\n--- REPAIR (ERR_V2_UPDATE_EXISTING_FORBIDDEN) ---\n");
+                        apply_prompt.push_str("Сгенерируй PATCH_FILE вместо UPDATE_FILE для существующих файлов. Используй base_sha256 из контекста.\n\n");
+                    }
+                    apply_prompt.push_str("Raw output предыдущего ответа:\n");
+                    apply_prompt.push_str(validated_json_str);
+                    apply_prompt.push_str("\n\n");
+                }
+            }
+            apply_prompt.push_str("\n\n--- РЕЖИМ APPLY ---\nПользователь подтвердил план. Применяй изменения согласно плану ниже. Верни actions с конкретными правками файлов.\n\nПЛАН:\n");
             apply_prompt.push_str(plan_json);
             if let Some(ctx) = last_context_for_apply {
                 apply_prompt.push_str("\n\nСОБРАННЫЙ_КОНТЕКСТ:\n");
@@ -943,12 +1236,20 @@ pub async fn plan(
             }
         }
 
-        let resp = req.send().await.map_err(|e| {
-            if e.is_timeout() {
-                log_llm_event(&trace_id, "LLM_REQUEST_TIMEOUT", &[("timeout_sec", timeout_sec.to_string())]);
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let timeout = e.is_timeout();
+                if timeout {
+                    log_llm_event(&trace_id, "LLM_REQUEST_TIMEOUT", &[("timeout_sec", timeout_sec.to_string())]);
+                }
+                return Err(format!(
+                    "{}: Request: {}",
+                    if timeout { "LLM_REQUEST_TIMEOUT" } else { "LLM_REQUEST" },
+                    e
+                ));
             }
-            format!("Request: {}", e)
-        })?;
+        };
         let status = resp.status();
         let text = resp.text().await.map_err(|e| format!("Response body: {}", e))?;
 
@@ -1005,7 +1306,7 @@ pub async fn plan(
             Err(e) => {
                 let mut trace_val = serde_json::json!({ "trace_id": trace_id, "raw_content": content, "error": e, "event": "VALIDATION_FAILED" });
                 write_trace(path, &trace_id, &mut trace_val);
-                return Err(e);
+                return Err(format!("ERR_JSON_EXTRACT: {}", e));
             }
         };
 
@@ -1020,7 +1321,7 @@ pub async fn plan(
                 repair_done = true;
                 continue;
             }
-            Err(e) => return Err(format!("JSON parse: {}", e)),
+            Err(e) => return Err(format!("ERR_JSON_PARSE: JSON parse: {}", e)),
         };
 
         // Локальная валидация схемы (best-effort при strict выкл; обязательна при strict вкл)
@@ -1036,7 +1337,7 @@ pub async fn plan(
             }
             let mut trace_val = serde_json::json!({ "trace_id": trace_id, "raw_content": content, "validated_json": json_str, "error": e, "event": "VALIDATION_FAILED" });
             write_trace(path, &trace_id, &mut trace_val);
-            return Err(e);
+            return Err(format!("ERR_SCHEMA_VALIDATION: {}", e));
         }
 
         let parsed = parse_plan_response(json_str)?;
@@ -1102,7 +1403,7 @@ pub async fn plan(
         break (parsed.actions, parsed.summary_override, json_str.to_string(), user_message.clone());
     };
 
-    // Строгая валидация: path, content, конфликты, UPDATE_WITHOUT_BASE
+    // Строгая валидация: path, content, конфликты, UPDATE_WITHOUT_BASE, v2 UPDATE_EXISTING_FORBIDDEN
     if let Err(e) = validate_actions(&last_actions) {
         log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_ACTIONS".to_string()), ("reason", e.clone())]);
         let mut trace_val = serde_json::json!({ "trace_id": trace_id, "validated_json": last_plan_json, "error": e, "event": "VALIDATION_FAILED" });
@@ -1115,6 +1416,12 @@ pub async fn plan(
     if mode_for_update_base == Some("apply") {
         if let Err(e) = validate_update_without_base(&last_actions, last_context_for_apply) {
             log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_UPDATE_WITHOUT_BASE".to_string()), ("reason", e.clone())]);
+            let mut trace_val = serde_json::json!({ "trace_id": trace_id, "validated_json": last_plan_json, "error": e, "event": "VALIDATION_FAILED" });
+            write_trace(path, &trace_id, &mut trace_val);
+            return Err(e);
+        }
+        if let Err(e) = validate_v2_update_existing_forbidden(project_root, &last_actions) {
+            log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_V2_UPDATE_EXISTING_FORBIDDEN".to_string()), ("reason", e.clone())]);
             let mut trace_val = serde_json::json!({ "trace_id": trace_id, "validated_json": last_plan_json, "error": e, "event": "VALIDATION_FAILED" });
             write_trace(path, &trace_id, &mut trace_val);
             return Err(e);
@@ -1136,7 +1443,38 @@ pub async fn plan(
         "provider": provider,
         "actions_count": last_actions.len(),
         "validated_json": last_plan_json,
+        "protocol_default": crate::protocol::protocol_default(),
     });
+    if let Some((_, _)) = apply_error_for_repair {
+        trace_val["protocol_repair_attempt"] = serde_json::json!(apply_repair_attempt.unwrap_or(0));
+    }
+    if force_protocol_version == Some(1) {
+        trace_val["protocol_attempts"] = serde_json::json!(["v2", "v1"]);
+        trace_val["protocol_fallback_reason"] = serde_json::json!(apply_error_for_repair.as_ref().map(|(c, _)| *c).unwrap_or("unknown"));
+        trace_val["protocol_fallback_attempted"] = serde_json::json!(true);
+        trace_val["protocol_fallback_stage"] = serde_json::json!(apply_error_stage.unwrap_or("apply"));
+    }
+    if !repair_injected_paths.is_empty() {
+        trace_val["repair_injected_sha256"] = serde_json::json!(true);
+        trace_val["repair_injected_paths"] = serde_json::json!(repair_injected_paths);
+    }
+    if online_fallback_executed == Some(true) {
+        trace_val["online_fallback_executed"] = serde_json::json!(true);
+        if let Some(reason) = online_fallback_reason {
+            trace_val["online_fallback_reason"] = serde_json::json!(reason);
+        }
+    }
+    if let Some(ref r) = online_block_result {
+        trace_val["online_context_injected"] = serde_json::json!(true);
+        trace_val["online_context_chars"] = serde_json::json!(r.chars_used);
+        trace_val["online_context_sources_count"] = serde_json::json!(r.sources_count);
+        if r.was_truncated {
+            trace_val["online_context_truncated"] = serde_json::json!(true);
+        }
+    }
+    if online_context_dropped {
+        trace_val["online_context_dropped"] = serde_json::json!(true);
+    }
     if let Some(ref cs) = last_context_stats {
         trace_val["context_stats"] = serde_json::json!({
             "context_files_count": cs.context_files_count,
@@ -1169,18 +1507,38 @@ pub async fn plan(
         error_code: None,
         plan_json,
         plan_context,
+        protocol_version_used: Some(effective_protocol),
+        online_fallback_suggested: None,
+        online_context_used: Some(online_block_result.is_some()),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_files_read_from_plan_context, parse_actions_from_json, schema_hash, schema_hash_for_version,
-        validate_actions, validate_update_without_base, FIX_PLAN_SYSTEM_PROMPT, LLM_PLAN_SCHEMA_VERSION,
+        build_v2_patch_repair_prompt_with_sha, compiled_schema_for_version,
+        extract_files_read_from_plan_context, is_protocol_fallback_applicable, parse_actions_from_json,
+        schema_hash, schema_hash_for_version,
+        validate_actions, validate_update_without_base, validate_v2_update_existing_forbidden,
+        FIX_PLAN_SYSTEM_PROMPT, LLM_PLAN_SCHEMA_VERSION,
     };
     use crate::types::{Action, ActionKind};
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn test_protocol_fallback_applicable() {
+        std::env::set_var("PAPAYU_PROTOCOL_DEFAULT", "2");
+        std::env::set_var("PAPAYU_PROTOCOL_FALLBACK_TO_V1", "1");
+        assert!(!is_protocol_fallback_applicable("ERR_PATCH_APPLY_FAILED", 0)); // repair-first
+        assert!(is_protocol_fallback_applicable("ERR_PATCH_APPLY_FAILED", 1));
+        assert!(is_protocol_fallback_applicable("ERR_NON_UTF8_FILE", 0)); // immediate fallback
+        assert!(!is_protocol_fallback_applicable("ERR_V2_UPDATE_EXISTING_FORBIDDEN", 0)); // repair-first
+        assert!(is_protocol_fallback_applicable("ERR_V2_UPDATE_EXISTING_FORBIDDEN", 1));
+        assert!(!is_protocol_fallback_applicable("ERR_BASE_MISMATCH", 0)); // sha repair, not fallback
+        std::env::remove_var("PAPAYU_PROTOCOL_DEFAULT");
+        std::env::remove_var("PAPAYU_PROTOCOL_FALLBACK_TO_V1");
+    }
 
     #[test]
     fn test_schema_version_is_one() {
@@ -1218,6 +1576,13 @@ mod tests {
         assert_eq!(h.len(), 64);
     }
 
+    /// Run with: cargo test golden_traces_v2_schema_hash -- --nocapture
+    #[test]
+    #[ignore]
+    fn golden_traces_v2_schema_hash() {
+        eprintln!("v2 schema_hash: {}", schema_hash_for_version(2));
+    }
+
     #[test]
     fn test_validate_actions_empty() {
         assert!(validate_actions(&[]).is_ok());
@@ -1229,6 +1594,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "README.md".to_string(),
             content: Some("# Project".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_ok());
     }
@@ -1239,6 +1606,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "../etc/passwd".to_string(),
             content: Some("x".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1249,6 +1618,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "/etc/passwd".to_string(),
             content: Some("x".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1259,6 +1630,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "a/..".to_string(),
             content: Some("x".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1269,6 +1642,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "C:/foo/bar".to_string(),
             content: Some("x".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1279,6 +1654,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "//server/share/file".to_string(),
             content: Some("x".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1289,6 +1666,8 @@ mod tests {
             kind: ActionKind::CreateDir,
             path: ".".to_string(),
             content: None,
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1299,6 +1678,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "a/./b".to_string(),
             content: Some("x".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1309,6 +1690,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "./src/main.rs".to_string(),
             content: Some("fn main() {}".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_ok());
     }
@@ -1320,11 +1703,15 @@ mod tests {
                 kind: ActionKind::CreateFile,
                 path: "foo.txt".to_string(),
                 content: Some("a".to_string()),
+                patch: None,
+                base_sha256: None,
             },
             Action {
                 kind: ActionKind::UpdateFile,
                 path: "foo.txt".to_string(),
                 content: Some("b".to_string()),
+                patch: None,
+                base_sha256: None,
             },
         ];
         assert!(validate_actions(&actions).is_err());
@@ -1337,11 +1724,15 @@ mod tests {
                 kind: ActionKind::DeleteFile,
                 path: "foo.txt".to_string(),
                 content: None,
+                patch: None,
+                base_sha256: None,
             },
             Action {
                 kind: ActionKind::UpdateFile,
                 path: "foo.txt".to_string(),
                 content: Some("b".to_string()),
+                patch: None,
+                base_sha256: None,
             },
         ];
         assert!(validate_actions(&actions).is_err());
@@ -1356,6 +1747,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_files_from_plan_context_v2_sha256() {
+        let ctx = "FILE[src/parser.py] (sha256=7f3f2a0c9f8b1a0c9b4c0f9e3d8a4b2d8c9e7f1a0b3c4d5e6f7a8b9c0d1e2f3a):\n1|def parse";
+        let paths = extract_files_read_from_plan_context(ctx);
+        assert!(paths.contains("src/parser.py"));
+    }
+
+    #[test]
     fn test_validate_update_without_base_ok() {
         let ctx = "FILE[foo.txt]:\nold\n\n=== bar.txt ===\ncontent\n";
         let actions = vec![
@@ -1363,11 +1761,15 @@ mod tests {
                 kind: ActionKind::UpdateFile,
                 path: "foo.txt".to_string(),
                 content: Some("new".to_string()),
+                patch: None,
+                base_sha256: None,
             },
             Action {
                 kind: ActionKind::UpdateFile,
                 path: "bar.txt".to_string(),
                 content: Some("updated".to_string()),
+                patch: None,
+                base_sha256: None,
             },
         ];
         assert!(validate_update_without_base(&actions, Some(ctx)).is_ok());
@@ -1380,6 +1782,8 @@ mod tests {
             kind: ActionKind::UpdateFile,
             path: "unknown.txt".to_string(),
             content: Some("new".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_update_without_base(&actions, Some(ctx)).is_err());
     }
@@ -1390,6 +1794,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "~/etc/passwd".to_string(),
             content: Some("x".to_string()),
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1400,6 +1806,8 @@ mod tests {
             kind: ActionKind::CreateFile,
             path: "README.md".to_string(),
             content: None,
+            patch: None,
+            base_sha256: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1421,6 +1829,103 @@ mod tests {
         let actions = parse_actions_from_json(&actions_str).unwrap();
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].path, "src");
+    }
+
+    #[test]
+    fn test_v2_update_existing_forbidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::env::set_var("PAPAYU_PROTOCOL_VERSION", "2");
+
+        let actions = vec![Action {
+            kind: ActionKind::UpdateFile,
+            path: "src/main.rs".to_string(),
+            content: Some("fn main() { println!(\"x\"); }\n".to_string()),
+            patch: None,
+            base_sha256: None,
+        }];
+        let r = validate_v2_update_existing_forbidden(root, &actions);
+        std::env::remove_var("PAPAYU_PROTOCOL_VERSION");
+
+        assert!(r.is_err());
+        let e = r.unwrap_err();
+        assert!(e.contains("ERR_V2_UPDATE_EXISTING_FORBIDDEN"));
+        assert!(e.contains("PATCH_FILE"));
+    }
+
+    #[test]
+    fn test_build_repair_prompt_injects_sha256() {
+        let sha = "a".repeat(64);
+        std::env::set_var("PAPAYU_PROTOCOL_VERSION", "2");
+        let ctx = format!("FILE[src/main.rs] (sha256={}):\nfn main() {{}}\n", sha);
+        let validated = serde_json::json!({
+            "actions": [{
+                "kind": "PATCH_FILE",
+                "path": "src/main.rs",
+                "base_sha256": "wrong",
+                "patch": "--- a/foo\n+++ b/foo\n@@ -1,1 +1,2 @@\nold\n+new"
+            }]
+        });
+        let result = build_v2_patch_repair_prompt_with_sha(&ctx, &validated);
+        std::env::remove_var("PAPAYU_PROTOCOL_VERSION");
+        assert!(result.is_some());
+        let (p, paths) = result.unwrap();
+        assert!(p.contains("base_sha256"));
+        assert!(p.contains(&sha));
+        assert!(p.contains("src/main.rs"));
+        assert_eq!(paths, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn test_repair_prompt_fallback_when_sha_missing() {
+        std::env::set_var("PAPAYU_PROTOCOL_VERSION", "2");
+        let ctx = "FILE[src/main.rs]:\nfn main() {}\n";
+        let validated = serde_json::json!({
+            "actions": [{
+                "kind": "PATCH_FILE",
+                "path": "src/main.rs",
+                "base_sha256": "wrong",
+                "patch": "--- a/foo\n+++ b/foo\n@@ -1,1 +1,2 @@\nold\n+new"
+            }]
+        });
+        let result = build_v2_patch_repair_prompt_with_sha(ctx, &validated);
+        std::env::remove_var("PAPAYU_PROTOCOL_VERSION");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_repair_prompt_not_generated_when_base_matches() {
+        let sha = "b".repeat(64);
+        std::env::set_var("PAPAYU_PROTOCOL_VERSION", "2");
+        let ctx = format!("FILE[src/foo.rs] (sha256={}):\ncontent\n", sha);
+        let validated = serde_json::json!({
+            "actions": [{
+                "kind": "PATCH_FILE",
+                "path": "src/foo.rs",
+                "base_sha256": sha,
+                "patch": "--- a/foo\n+++ b/foo\n@@ -1,1 +1,2 @@\ncontent\n+more"
+            }]
+        });
+        let result = build_v2_patch_repair_prompt_with_sha(&ctx, &validated);
+        std::env::remove_var("PAPAYU_PROTOCOL_VERSION");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_actions_from_json_patch_file() {
+        let sha = "a".repeat(64);
+        let actions_str = format!(
+            r#"[{{"kind":"PATCH_FILE","path":"src/main.rs","patch":"--- a/foo\n+++ b/foo\n@@ -1,1 +1,2 @@\nold\n+new","base_sha256":"{}"}}]"#,
+            sha
+        );
+        let actions = parse_actions_from_json(&actions_str).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].kind, ActionKind::PatchFile);
+        assert_eq!(actions[0].path, "src/main.rs");
+        assert!(actions[0].patch.is_some());
+        assert_eq!(actions[0].base_sha256.as_deref(), Some(sha.as_str()));
     }
 
     #[test]
@@ -1512,6 +2017,90 @@ mod tests {
                         assert!(n <= 1_000_000, "{}: cache {} reasonable", name, key);
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn golden_traces_v2_validate() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/golden_traces/v2");
+        if !dir.exists() {
+            return;
+        }
+        let expected_schema_hash = schema_hash_for_version(2);
+        let v2_schema = compiled_schema_for_version(2).expect("v2 schema must compile");
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            let s = fs::read_to_string(&path).unwrap_or_else(|_| panic!("read {}", name));
+            let v: serde_json::Value =
+                serde_json::from_str(&s).unwrap_or_else(|e| panic!("{}: json {}", name, e));
+
+            assert_eq!(
+                v.get("protocol")
+                    .and_then(|p| p.get("schema_version"))
+                    .and_then(|x| x.as_u64()),
+                Some(2),
+                "{}: schema_version must be 2",
+                name
+            );
+            let sh = v
+                .get("protocol")
+                .and_then(|p| p.get("schema_hash"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            assert_eq!(sh, expected_schema_hash, "{}: schema_hash", name);
+
+            let validated = v
+                .get("result")
+                .and_then(|r| r.get("validated_json"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if validated.is_null() {
+                continue;
+            }
+            v2_schema
+                .validate(&validated)
+                .map_err(|errs| {
+                    let msgs: Vec<String> = errs.map(|e| e.to_string()).collect();
+                    format!("{}: v2 schema validation: {}", name, msgs.join("; "))
+                })
+                .unwrap();
+
+            let validated_str = serde_json::to_string(&validated).unwrap();
+            let parsed = super::parse_plan_response(&validated_str)
+                .unwrap_or_else(|e| panic!("{}: parse validated_json: {}", name, e));
+
+            if v.get("result")
+                .and_then(|r| r.get("validation_outcome"))
+                .and_then(|x| x.as_str())
+                == Some("ok")
+            {
+                assert!(
+                    validate_actions(&parsed.actions).is_ok(),
+                    "{}: validate_actions",
+                    name
+                );
+            }
+
+            let mode = v
+                .get("request")
+                .and_then(|r| r.get("mode"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if mode == "apply" && parsed.actions.is_empty() {
+                let summary = validated
+                    .get("summary")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                assert!(
+                    summary.starts_with("NO_CHANGES:"),
+                    "{}: apply with empty actions requires NO_CHANGES: prefix in summary",
+                    name
+                );
             }
         }
     }

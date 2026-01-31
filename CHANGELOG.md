@@ -51,6 +51,11 @@
 - **CI:** `.github/workflows/protocol-check.yml` — golden_traces_v1_validate на push/PR.
 - **Политика golden traces:** в docs/golden_traces/README.md — когда/как обновлять, при смене schema_hash.
 - **Protocol v2 schema (plumbing):** `llm_response_schema_v2.json` — object-only, PATCH_FILE, base_sha256. `PAPAYU_PROTOCOL_VERSION=1|2` (default 1). schema_version и schema_hash динамические в trace.
+- **V2 system prompt:** `FIX_PLAN_SYSTEM_PROMPT_V2` при protocol=2 и fix-plan/fixit.
+- **Контекст v2:** FILE-блоки с sha256: `FILE[path] (sha256=...):` для base_sha256 в PATCH_FILE.
+- **PATCH_FILE engine:** diffy, sha256_hex, looks_like_unified_diff, apply_unified_diff. ActionKind::PatchFile, apply_patch_file_tx, preview. ERR_PATCH_NOT_UNIFIED, ERR_BASE_MISMATCH, ERR_PATCH_APPLY_FAILED.
+- **Коммит 5:** v2 prompt UPDATE_FILE запрещён для существующих. ERR_V2_UPDATE_EXISTING_FORBIDDEN (plan + apply). bytes_before/bytes_after в DiffItem. ERR_NON_UTF8_FILE docs.
+- **Golden traces v2:** docs/golden_traces/v2/ (5 fixtures), golden_traces_v2_validate. CI: v1 + v2.
 
 ### Изменено
 

@@ -9,7 +9,7 @@
     "tauri": "tauri",
     "icons:export": "node scripts/export-icon.js",
     "golden": "cd src-tauri && cargo run --bin trace_to_golden --",
-    "test-protocol": "cd src-tauri && cargo test golden_traces_v1_validate"
+    "test-protocol": "cd src-tauri && cargo test golden_traces"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

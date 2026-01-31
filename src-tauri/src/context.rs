@@ -1,10 +1,16 @@
 //! Автосбор контекста для LLM: env, project prefs, context_requests (read_file, search, logs).
 //! Кеш read/search/logs/env в пределах сессии (plan-цикла).
+//! Protocol v2: FILE[path] (sha256=...) для base_sha256 в PATCH_FILE.
 
 use crate::memory::EngineeringMemory;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+fn protocol_version() -> u32 {
+    crate::protocol::protocol_version(None)
+}
 
 const MAX_CONTEXT_LINE_LEN: usize = 80_000;
 const SEARCH_MAX_HITS: usize = 50;
@@ -23,7 +29,7 @@ fn context_max_file_chars() -> usize {
         .unwrap_or(20_000)
 }
 
-fn context_max_total_chars() -> usize {
+pub fn context_max_total_chars() -> usize {
     std::env::var("PAPAYU_CONTEXT_MAX_TOTAL_CHARS")
         .ok()
         .and_then(|s| s.trim().parse().ok())
@@ -184,6 +190,7 @@ pub struct FulfillResult {
 
 /// Выполняет context_requests от модели и возвращает текст для добавления в user message.
 /// Использует кеш, если передан; логирует CONTEXT_CACHE_HIT/MISS при trace_id.
+/// При protocol_version=2 добавляет sha256 в FILE-блоки: FILE[path] (sha256=...).
 pub fn fulfill_context_requests(
     project_root: &Path,
     requests: &[serde_json::Value],
@@ -191,6 +198,7 @@ pub fn fulfill_context_requests(
     mut cache: Option<&mut ContextCache>,
     trace_id: Option<&str>,
 ) -> FulfillResult {
+    let include_sha256 = protocol_version() == 2;
     let mut parts = Vec::new();
     let mut logs_chars: usize = 0;
     for r in requests {
@@ -222,8 +230,12 @@ pub fn fulfill_context_requests(
                             v
                         } else {
                             c.cache_stats.read_misses += 1;
-                            let v = read_file_snippet(project_root, path, start as usize, end as usize);
-                            let out = format!("FILE[{}]:\n{}", path, v);
+                            let (snippet, sha) = read_file_snippet_with_sha256(project_root, path, start as usize, end as usize);
+                            let out = if include_sha256 && !sha.is_empty() {
+                                format!("FILE[{}] (sha256={}):\n{}", path, sha, snippet)
+                            } else {
+                                format!("FILE[{}]:\n{}", path, snippet)
+                            };
                             if let Some(tid) = trace_id {
                                 eprintln!("[{}] CONTEXT_CACHE_MISS key=read_file path={} size={}", tid, path, out.len());
                             }
@@ -231,8 +243,12 @@ pub fn fulfill_context_requests(
                             out
                         }
                     } else {
-                        let v = read_file_snippet(project_root, path, start as usize, end as usize);
-                        format!("FILE[{}]:\n{}", path, v)
+                        let (snippet, sha) = read_file_snippet_with_sha256(project_root, path, start as usize, end as usize);
+                        if include_sha256 && !sha.is_empty() {
+                            format!("FILE[{}] (sha256={}):\n{}", path, sha, snippet)
+                        } else {
+                            format!("FILE[{}]:\n{}", path, snippet)
+                        }
                     };
                     parts.push(content);
                 }
@@ -408,6 +424,51 @@ pub fn fulfill_context_requests(
     }
 }
 
+/// Читает файл и возвращает (snippet, sha256_hex). sha256 — от полного содержимого файла.
+fn read_file_snippet_with_sha256(
+    root: &Path,
+    rel_path: &str,
+    start_line: usize,
+    end_line: usize,
+) -> (String, String) {
+    let path = root.join(rel_path);
+    if !path.is_file() {
+        return (format!("(файл не найден: {})", rel_path), String::new());
+    }
+    let full_content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return ("(не удалось прочитать)".to_string(), String::new()),
+    };
+    let sha256_hex = {
+        let mut hasher = Sha256::new();
+        hasher.update(full_content.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+    let lines: Vec<&str> = full_content.lines().collect();
+    let start = start_line.saturating_sub(1).min(lines.len());
+    let end = end_line.min(lines.len()).max(start);
+    let slice: Vec<&str> = lines.get(start..end).unwrap_or(&[]).into_iter().copied().collect();
+    let mut out = String::new();
+    for (i, line) in slice.iter().enumerate() {
+        let line_no = start + i + 1;
+        out.push_str(&format!("{}|{}\n", line_no, line));
+    }
+    let max_chars = context_max_file_chars().min(MAX_CONTEXT_LINE_LEN);
+    let snippet = if out.len() > max_chars {
+        let head = (max_chars as f32 * 0.6) as usize;
+        let tail = max_chars - head - 30;
+        format!(
+            "{}...[TRUNCATED {} chars]...\n{}",
+            &out[..head.min(out.len())],
+            out.len(),
+            &out[out.len().saturating_sub(tail)..]
+        )
+    } else {
+        out
+    };
+    (snippet, sha256_hex)
+}
+
 fn read_file_snippet(root: &Path, rel_path: &str, start_line: usize, end_line: usize) -> String {
     let path = root.join(rel_path);
     if !path.is_file() {
@@ -551,6 +612,37 @@ pub fn gather_auto_context_from_message(project_root: &Path, user_message: &str)
     }
 }
 
+/// Извлекает path → sha256 из контекста (FILE[path] (sha256=...):). Для диагностики и repair.
+pub fn extract_file_sha256_from_context(context: &str) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let mut m = HashMap::new();
+    for line in context.lines() {
+        if !line.starts_with("FILE[") {
+            continue;
+        }
+        let close = match line.find(']') {
+            Some(i) => i,
+            None => continue,
+        };
+        let path = &line[5..close];
+        let sha_tag = "(sha256=";
+        let sha_pos = match line.find(sha_tag) {
+            Some(i) => i,
+            None => continue,
+        };
+        let sha_start = sha_pos + sha_tag.len();
+        let sha_end = match line[sha_start..].find(')') {
+            Some(j) => sha_start + j,
+            None => continue,
+        };
+        let sha = &line[sha_start..sha_end];
+        if sha.len() == 64 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            m.insert(path.to_string(), sha.to_string());
+        }
+    }
+    m
+}
+
 /// Извлекает пути и строки из traceback в тексте (Python). Используется при автосборе контекста по ошибке.
 pub fn extract_traceback_files(text: &str) -> Vec<(String, usize)> {
     let mut out = Vec::new();
@@ -660,5 +752,48 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert!(files[0].0.contains("main.py"));
         assert_eq!(files[0].1, 42);
+    }
+
+    #[test]
+    fn test_extract_file_sha256_from_context() {
+        let ctx = r#"FILE[src/parser.py] (sha256=7f3f2a0c9f8b1a0c9b4c0f9e3d8a4b2d8c9e7f1a0b3c4d5e6f7a8b9c0d1e2f3a):
+1|def parse
+
+FILE[src/main.rs]:
+fn main() {}"#;
+        let m = extract_file_sha256_from_context(ctx);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get("src/parser.py").map(|s| s.as_str()), Some("7f3f2a0c9f8b1a0c9b4c0f9e3d8a4b2d8c9e7f1a0b3c4d5e6f7a8b9c0d1e2f3a"));
+        // src/main.rs без sha256 — не попадёт
+        assert!(m.get("src/main.rs").is_none());
+
+        let sha_a = "a".repeat(64);
+        let sha_b = "b".repeat(64);
+        let ctx2a = format!("FILE[a.py] (sha256={}):\ncontent\n", sha_a);
+        let ctx2b = format!("FILE[b.rs] (sha256={}):\ncontent\n", sha_b);
+        let m2a = extract_file_sha256_from_context(&ctx2a);
+        let m2b = extract_file_sha256_from_context(&ctx2b);
+        assert_eq!(m2a.len(), 1);
+        assert_eq!(m2b.len(), 1);
+        assert_eq!(m2a.get("a.py").map(|s| s.len()), Some(64));
+        assert_eq!(m2b.get("b.rs").map(|s| s.len()), Some(64));
+    }
+
+    #[test]
+    fn test_render_file_block_v2_includes_sha256() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::env::set_var("PAPAYU_PROTOCOL_VERSION", "2");
+        let reqs = vec![serde_json::json!({"type": "read_file", "path": "src/main.rs", "start_line": 1, "end_line": 10})];
+        let result = fulfill_context_requests(root, &reqs, 200, None, None);
+        std::env::remove_var("PAPAYU_PROTOCOL_VERSION");
+        assert!(result.content.contains("FILE[src/main.rs] (sha256="));
+        assert!(result.content.contains("):"));
+        let m = extract_file_sha256_from_context(&result.content);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get("src/main.rs").map(|s| s.len()), Some(64));
     }
 }

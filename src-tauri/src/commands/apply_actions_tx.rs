@@ -9,10 +9,28 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::commands::get_project_profile::get_project_limits;
-use crate::tx::{normalize_content_for_write, safe_join, sort_actions_for_apply};
-use crate::types::{Action, ActionKind, ApplyOptions, ApplyTxResult, CheckStageResult};
+use crate::tx::{apply_one_action, sort_actions_for_apply};
+use crate::types::{Action, ApplyOptions, ApplyTxResult, CheckStageResult};
 
 const PROGRESS_EVENT: &str = "analyze_progress";
+
+fn extract_error_code(err: &str) -> String {
+    if err.starts_with("ERR_PATCH_NOT_UNIFIED") {
+        "ERR_PATCH_NOT_UNIFIED".into()
+    } else if err.starts_with("ERR_BASE_MISMATCH") {
+        "ERR_BASE_MISMATCH".into()
+    } else if err.starts_with("ERR_PATCH_APPLY_FAILED") {
+        "ERR_PATCH_APPLY_FAILED".into()
+    } else if err.starts_with("ERR_BASE_SHA256_INVALID") {
+        "ERR_BASE_SHA256_INVALID".into()
+    } else if err.starts_with("ERR_NON_UTF8_FILE") {
+        "ERR_NON_UTF8_FILE".into()
+    } else if err.starts_with("ERR_V2_UPDATE_EXISTING_FORBIDDEN") {
+        "ERR_V2_UPDATE_EXISTING_FORBIDDEN".into()
+    } else {
+        "APPLY_FAILED_ROLLED_BACK".into()
+    }
+}
 
 fn clip(s: String, n: usize) -> String {
     if s.len() <= n {
@@ -112,35 +130,6 @@ fn restore_snapshot(project_root: &Path, snap_dir: &Path) -> Result<(), String> 
     Ok(())
 }
 
-fn apply_one_action(root: &Path, action: &Action) -> Result<(), String> {
-    let p = safe_join(root, &action.path)?;
-    match action.kind {
-        ActionKind::CreateFile | ActionKind::UpdateFile => {
-            let content = action.content.as_deref().unwrap_or("");
-            let normalized = normalize_content_for_write(content, &p);
-            if let Some(parent) = p.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            fs::write(&p, normalized.as_bytes()).map_err(|e| e.to_string())?;
-            Ok(())
-        }
-        ActionKind::DeleteFile => {
-            if p.exists() {
-                fs::remove_file(&p).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        }
-        ActionKind::CreateDir => {
-            fs::create_dir_all(&p).map_err(|e| e.to_string())
-        }
-        ActionKind::DeleteDir => {
-            if p.exists() {
-                fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        }
-    }
-}
 
 fn run_cmd_allowlisted(
     cwd: &Path,
@@ -292,6 +281,7 @@ pub async fn apply_actions_tx(
             checks: vec![],
             error: Some("path not found".into()),
             error_code: Some("PATH_NOT_FOUND".into()),
+            protocol_fallback_stage: None,
         };
     }
 
@@ -304,6 +294,7 @@ pub async fn apply_actions_tx(
             checks: vec![],
             error: Some("confirmation required".into()),
             error_code: Some("CONFIRM_REQUIRED".into()),
+            protocol_fallback_stage: None,
         };
     }
 
@@ -321,6 +312,7 @@ pub async fn apply_actions_tx(
                 limits.max_actions_per_tx
             )),
             error_code: Some("TOO_MANY_ACTIONS".into()),
+            protocol_fallback_stage: None,
         };
     }
 
@@ -335,6 +327,7 @@ pub async fn apply_actions_tx(
                 checks: vec![],
                 error: Some(format!("protected or non-text file: {}", rel)),
                 error_code: Some("PROTECTED_PATH".into()),
+                protocol_fallback_stage: None,
             };
         }
     }
@@ -353,6 +346,7 @@ pub async fn apply_actions_tx(
                 checks: vec![],
                 error: Some(e),
                 error_code: Some("SNAPSHOT_FAILED".into()),
+                protocol_fallback_stage: None,
             };
         }
     };
@@ -361,8 +355,14 @@ pub async fn apply_actions_tx(
     let mut actions = actions;
     sort_actions_for_apply(&mut actions);
     for a in &actions {
-        if let Err(e) = apply_one_action(&root, a) {
+        let protocol_override = options.protocol_version_override;
+        if let Err(e) = apply_one_action(&root, a, protocol_override) {
             let _ = restore_snapshot(&root, &snap_dir);
+            let error_code = extract_error_code(&e);
+            let fallback_stage = crate::protocol::V2_FALLBACK_ERROR_CODES
+                .iter()
+                .any(|c| error_code == *c)
+                .then(|| "apply".to_string());
             eprintln!("[APPLY_ROLLBACK] tx_id={} path={} reason={}", tx_id, path, e);
             return ApplyTxResult {
                 ok: false,
@@ -371,7 +371,8 @@ pub async fn apply_actions_tx(
                 rolled_back: true,
                 checks: vec![],
                 error: Some(e),
-                error_code: Some("APPLY_FAILED_ROLLED_BACK".into()),
+                error_code: Some(error_code),
+                protocol_fallback_stage: fallback_stage,
             };
         }
     }
@@ -403,6 +404,7 @@ pub async fn apply_actions_tx(
                 checks,
                 error: Some("autoCheck failed — rolled back".into()),
                 error_code: Some("AUTO_CHECK_FAILED_ROLLED_BACK".into()),
+                protocol_fallback_stage: None,
             };
         }
     }
@@ -425,6 +427,7 @@ pub async fn apply_actions_tx(
         checks,
         error: None,
         error_code: None,
+        protocol_fallback_stage: None,
     }
 }
 

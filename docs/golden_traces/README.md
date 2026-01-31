@@ -12,6 +12,12 @@ docs/golden_traces/
     001_fix_bug_plan.json
     002_fix_bug_apply.json
     ...
+  v2/                  # Protocol v2 fixtures (PATCH_FILE, base_sha256)
+    001_fix_bug_plan.json
+    002_fix_bug_apply_patch.json
+    003_base_mismatch_block.json
+    004_patch_apply_failed_block.json
+    005_no_changes_apply.json
 ```
 
 ## Формат fixture (без секретов)
@@ -37,7 +43,7 @@ cargo run --bin trace_to_golden -- <path/to/trace.json> [output_path]
 ## Регрессионный тест
 
 ```bash
-cargo test golden_traces_v1_validate
+cargo test golden_traces_v1_validate golden_traces_v2_validate
 # или
 make test-protocol
 npm run test-protocol

@@ -86,6 +86,8 @@ pub async fn generate_actions_from_report(
                 content: Some(
                     "# Project\n\n## Описание\n\nКратко опишите проект.\n\n## Запуск\n\n- dev: ...\n- build: ...\n\n## Структура\n\n- src/\n- tests/\n".into(),
                 ),
+                patch: None,
+                base_sha256: None,
             });
         }
     }
@@ -102,6 +104,8 @@ pub async fn generate_actions_from_report(
                 content: Some(
                     "node_modules/\ndist/\nbuild/\n.next/\ncoverage/\n.env\n.env.*\n.DS_Store\n.target/\n".into(),
                 ),
+                patch: None,
+                base_sha256: None,
             });
         }
     }
@@ -116,6 +120,8 @@ pub async fn generate_actions_from_report(
                 kind: ActionKind::CreateFile,
                 path: rel_path,
                 content: Some("MIT License\n\nCopyright (c) <year> <copyright holders>\n".into()),
+                patch: None,
+                base_sha256: None,
             });
         }
     }
@@ -128,6 +134,8 @@ pub async fn generate_actions_from_report(
                 kind: ActionKind::CreateDir,
                 path: dir_path,
                 content: None,
+                patch: None,
+                base_sha256: None,
             });
         }
         let keep_path = rel("tests/.gitkeep");
@@ -136,6 +144,8 @@ pub async fn generate_actions_from_report(
                 kind: ActionKind::CreateFile,
                 path: keep_path,
                 content: Some("".into()),
+                patch: None,
+                base_sha256: None,
             });
         }
     }

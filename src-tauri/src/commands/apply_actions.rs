@@ -133,7 +133,7 @@ pub fn apply_actions(app: AppHandle, payload: ApplyPayload) -> ApplyResult {
     let mut sorted_actions = payload.actions.clone();
     sort_actions_for_apply(&mut sorted_actions);
     for (i, action) in sorted_actions.iter().enumerate() {
-        if let Err(e) = apply_one_action(&root, action) {
+        if let Err(e) = apply_one_action(&root, action, None) {
             let _ = rollback_tx(&app, &tx_id);
             manifest.status = "rolled_back".into();
             let _ = write_manifest(&app, &manifest);

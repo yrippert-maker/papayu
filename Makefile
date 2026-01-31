@@ -18,7 +18,7 @@ golden-latest:
 	cd src-tauri && cargo run --bin trace_to_golden -- "../$$LATEST"
 
 test-protocol:
-	cd src-tauri && cargo test golden_traces_v1_validate
+	cd src-tauri && cargo test golden_traces
 
 test-all:
 	cd src-tauri && cargo test

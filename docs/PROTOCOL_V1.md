@@ -10,6 +10,8 @@
 - **schema_hash:** sha256 от `llm_response_schema.json` (в trace)
 - При изменении контракта — увеличивать schema_version; v2 — новый документ.
 
+**Default protocol:** v2; Apply может fallback на v1 при специфичных кодах ошибок (см. PROTOCOL_V2_PLAN.md).
+
 ---
 
 ## Гарантии
