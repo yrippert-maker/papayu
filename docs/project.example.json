@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "project": {
+    "default_test_command": "pytest -q",
+    "default_lint_command": "ruff check .",
+    "default_format_command": "ruff format .",
+    "package_manager": "pip",
+    "build_command": "python -c \"import app.main; print('ok')\"",
+    "src_roots": ["src"],
+    "test_roots": ["tests"],
+    "ci_notes": "Тесты долго, по умолчанию smoke."
+  }
+}

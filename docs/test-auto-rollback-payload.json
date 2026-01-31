@@ -1,0 +1,17 @@
+{
+  "_comment": "v2.3.3 — тест AUTO_ROLLBACK: шаг 1 создаёт файл, шаг 2 падает на safe_join (..). В papa-yu kind = SCREAMING_SNAKE_CASE.",
+  "root_path": "/ПУТЬ/К/ПРОЕКТУ",
+  "actions": [
+    {
+      "kind": "CREATE_FILE",
+      "path": "papayu_test_ok.txt",
+      "content": "Эта строка будет создана, а потом удалена rollback-ом"
+    },
+    {
+      "kind": "UPDATE_FILE",
+      "path": "../../forbidden.txt",
+      "content": "Эта операция должна упасть из-за safe_join"
+    }
+  ],
+  "auto_check": false
+}

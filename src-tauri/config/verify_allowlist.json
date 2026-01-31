@@ -1,0 +1,19 @@
+{
+  "rust": [
+    { "exe": "cargo", "args": ["check"], "name": "cargo check", "timeout_sec": 120 },
+    { "exe": "cargo", "args": ["test", "--no-run"], "name": "cargo test --no-run", "timeout_sec": 180 },
+    { "exe": "cargo", "args": ["clippy", "--", "-D", "warnings"], "name": "cargo clippy", "timeout_sec": 120 }
+  ],
+  "node": [
+    { "exe": "npm", "args": ["run", "-s", "test"], "name": "npm test", "timeout_sec": 120 },
+    { "exe": "npm", "args": ["run", "-s", "build"], "name": "npm run build", "timeout_sec": 180 },
+    { "exe": "npm", "args": ["run", "-s", "lint"], "name": "npm run lint", "timeout_sec": 60 },
+    { "exe": "npm", "args": ["run", "-s", "typecheck"], "name": "npm run typecheck", "timeout_sec": 60 },
+    { "exe": "npx", "args": ["tsc", "--noEmit"], "name": "tsc --noEmit", "timeout_sec": 60 }
+  ],
+  "python": [
+    { "exe": "python3", "args": ["-m", "compileall", ".", "-q"], "name": "python -m compileall", "timeout_sec": 60 },
+    { "exe": "python3", "args": ["-m", "pytest", "--collect-only", "-q"], "name": "pytest --collect-only", "timeout_sec": 60 },
+    { "exe": "python3", "args": ["-m", "mypy", "."], "name": "mypy", "timeout_sec": 120 }
+  ]
+}

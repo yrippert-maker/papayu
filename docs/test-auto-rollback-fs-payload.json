@@ -1,0 +1,17 @@
+{
+  "_comment": "v2.3.3 — тест AUTO_ROLLBACK через ОС: шаг 2 пишет в /System/... → permission denied. kind = SCREAMING_SNAKE_CASE.",
+  "root_path": "/ПУТЬ/К/ПРОЕКТУ",
+  "actions": [
+    {
+      "kind": "CREATE_FILE",
+      "path": "rollback_test.txt",
+      "content": "will be rolled back"
+    },
+    {
+      "kind": "UPDATE_FILE",
+      "path": "/System/Library/forbidden.txt",
+      "content": "permission denied"
+    }
+  ],
+  "auto_check": false
+}

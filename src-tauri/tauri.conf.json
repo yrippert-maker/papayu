@@ -1,0 +1,37 @@
+{
+  "productName": "PAPA YU",
+  "version": "2.4.4",
+  "identifier": "com.papa-yu.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "PAPA YU",
+        "label": "main",
+        "width": 1024,
+        "height": 720,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"],
+    "resources": [],
+    "externalBin": [],
+    "copyright": "",
+    "category": "DeveloperTool",
+    "shortDescription": "PAPA YU",
+    "longDescription": "PAPA YU — анализ проекта и автоматические исправления"
+  },
+  "plugins": {}
+}

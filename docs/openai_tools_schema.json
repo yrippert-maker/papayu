@@ -1,0 +1,121 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "list_files",
+      "description": "List project files (optionally under a directory).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "root": { "type": "string", "description": "Directory root, e.g. '.' or 'src'." },
+          "glob": { "type": "string", "description": "Glob filter, e.g. '**/*.py'." },
+          "max_results": { "type": "integer", "minimum": 1, "maximum": 500, "default": 200 }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_file",
+      "description": "Read a text file (optionally a line range).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "start_line": { "type": "integer", "minimum": 1, "description": "1-based inclusive." },
+          "end_line": { "type": "integer", "minimum": 1, "description": "1-based inclusive." },
+          "max_chars": { "type": "integer", "minimum": 200, "maximum": 200000, "default": 40000 }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_in_repo",
+      "description": "Search for a pattern across the repository.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Literal or regex depending on implementation." },
+          "glob": { "type": "string", "description": "Optional glob scope." },
+          "case_sensitive": { "type": "boolean", "default": false },
+          "max_results": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+        },
+        "required": ["query"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_env",
+      "description": "Get environment info: OS, language versions, package manager, tool versions.",
+      "parameters": { "type": "object", "properties": {}, "required": [] }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "run",
+      "description": "Run a command (lint/build/custom).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" },
+          "cwd": { "type": "string", "default": "." },
+          "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 600, "default": 120 }
+        },
+        "required": ["command"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "run_tests",
+      "description": "Run the project's test suite with a command.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string", "description": "e.g. 'pytest -q' or 'npm test'." },
+          "cwd": { "type": "string", "default": "." },
+          "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 1800, "default": 600 }
+        },
+        "required": ["command"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_logs",
+      "description": "Get recent application logs / build logs / runtime logs.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "description": "e.g. 'app', 'build', 'runtime'." },
+          "last_n": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 200 }
+        },
+        "required": ["source"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "apply_patch",
+      "description": "Apply a unified diff patch to the repository.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "diff": { "type": "string", "description": "Unified diff" }
+        },
+        "required": ["diff"]
+      }
+    }
+  }
+]

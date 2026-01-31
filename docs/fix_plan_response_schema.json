@@ -1,0 +1,75 @@
+{
+  "name": "papa_yu_plan_response",
+  "strict": false,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "mode": { "type": "string", "enum": ["fix-plan", "apply"] },
+      "summary": { "type": "string" },
+      "questions": { "type": "array", "items": { "type": "string" } },
+      "context_requests": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["read_file", "search", "logs", "env"] },
+            "path": { "type": "string" },
+            "start_line": { "type": "integer" },
+            "end_line": { "type": "integer" },
+            "query": { "type": "string" },
+            "glob": { "type": "string" },
+            "source": { "type": "string" },
+            "last_n": { "type": "integer" }
+          }
+        }
+      },
+      "plan": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "step": { "type": "string" },
+            "details": { "type": "string" }
+          }
+        }
+      },
+      "actions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "enum": ["CREATE_FILE", "CREATE_DIR", "UPDATE_FILE", "DELETE_FILE", "DELETE_DIR"] },
+            "path": { "type": "string" },
+            "content": { "type": "string" }
+          },
+          "required": ["kind", "path"]
+        }
+      },
+      "proposed_changes": {
+        "type": "object",
+        "properties": {
+          "patch": { "type": "string" },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string" },
+                "path": { "type": "string" },
+                "content": { "type": "string" }
+              }
+            }
+          },
+          "commands_to_run": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "patch": { "type": "string" },
+      "commands_to_run": { "type": "array", "items": { "type": "string" } },
+      "verification": { "type": "array", "items": { "type": "string" } },
+      "risks": { "type": "array", "items": { "type": "string" } },
+      "rollback": { "type": "array", "items": { "type": "string" } },
+      "memory_patch": { "type": "object" }
+    },
+    "additionalProperties": true
+  }
+}
