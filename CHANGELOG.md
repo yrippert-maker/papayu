@@ -8,6 +8,12 @@
 
 ## [2.4.4] — 2025-01-31
 
+### Protocol stability (v1)
+
+- **Schema version:** `LLM_PLAN_SCHEMA_VERSION=1`, `x_schema_version` в схеме, `schema_hash` (sha256) в trace.
+- **Версионирование:** при изменении контракта ответа LLM — увеличивать schema_version; trace содержит schema_version и schema_hash для воспроизводимости.
+- **Рекомендуемый тег:** `v1.0.0` или `v0.x` — зафиксировать «стабильный релиз» перед введением v2.
+
 ### Добавлено
 
 - **UX:** история сессий по проекту — блок «История сессий» с раскрывающимся списком сессий (дата, количество событий, последнее сообщение); обновление списка после agentic run.
@@ -35,7 +41,15 @@
 - **Capability detection:** при ошибке API response_format — автоматический retry без response_format (Ollama и др.).
 - **Schema version:** `x_schema_version` в llm_response_schema.json; schema_hash (sha256) в trace; LLM_PLAN_SCHEMA_VERSION в prompt.
 - **Кеш контекста:** read_file/search/logs/env кешируются в plan-цикле; CONTEXT_CACHE_HIT/MISS.
-- **Контекст-диета:** PAPAYU_CONTEXT_MAX_FILES=8, MAX_FILE_CHARS=20k, MAX_TOTAL_CHARS=120k; head+tail truncation; CONTEXT_DIET_APPLIED.
+- **Контекст-диета:** PAPAYU_CONTEXT_MAX_FILES=8, MAX_FILE_CHARS=20k, MAX_TOTAL_CHARS=120k; head+tail truncation; MIN_CHARS_FOR_PRIORITY0=4k; CONTEXT_DIET_APPLIED.
+- **Trace:** context_stats (files_count, dropped, total_chars, logs_chars, truncated) и cache_stats (hits/misses по env/logs/read/search, hit_rate).
+- **Кеш logs:** ключ Logs включает `last_n` — разные last_n не пересекаются.
+- **Golden traces:** эталонные fixtures в `docs/golden_traces/v1/` — формат protocol/request/context/result (без raw_content). Тест `golden_traces_v1_validate` валидирует schema_version, schema_hash, JSON schema, validate_actions, NO_CHANGES при apply+empty. Конвертер `trace_to_golden` (cargo run --bin trace_to_golden).
+- **Compatibility matrix:** в PROTOCOL_V1.md — Provider Compatibility таблица и 5 поведенческих гарантий.
+- **PROTOCOL_V2_PLAN.md:** план v2 (PATCH_FILE, REPLACE_RANGE, base_sha256).
+- **make/npm shortcuts:** `make golden` (trace→fixture), `make test-protocol` (golden_traces_v1_validate).
+- **CI:** `.github/workflows/protocol-check.yml` — golden_traces_v1_validate на push/PR.
+- **Политика golden traces:** в docs/golden_traces/README.md — когда/как обновлять, при смене schema_hash.
 
 ### Изменено
 

@@ -1,0 +1,43 @@
+{
+  "protocol": {
+    "schema_version": 1,
+    "schema_hash": "4410694d339f9c7b81566da48aabd498ae9d15a229d1d69b10fe7a2eb8d96e7e"
+  },
+  "request": {
+    "mode": "plan",
+    "input_chars": 100000,
+    "token_budget": 4096,
+    "strict_json": true,
+    "provider": "openai",
+    "model": "gpt-4o-mini"
+  },
+  "context": {
+    "context_stats": {
+      "context_files_count": 6,
+      "context_files_dropped_count": 3,
+      "context_total_chars": 118000,
+      "context_logs_chars": 5000,
+      "context_truncated_files_count": 2
+    },
+    "cache_stats": {
+      "env_hits": 1,
+      "env_misses": 0,
+      "logs_hits": 0,
+      "logs_misses": 1,
+      "read_hits": 2,
+      "read_misses": 4,
+      "search_hits": 1,
+      "search_misses": 1,
+      "hit_rate": 0.4444444444444444
+    }
+  },
+  "result": {
+    "validated_json": {
+      "actions": [],
+      "summary": "Диагноз: требуется больше контекста.",
+      "context_requests": []
+    },
+    "validation_outcome": "ok",
+    "error_code": null
+  }
+}

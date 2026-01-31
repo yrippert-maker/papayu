@@ -83,7 +83,9 @@ LLM должен вернуть **только валидный JSON** — ли�
 
 **Кеш контекста:** read_file/search/logs/env кешируются в пределах plan-цикла. Логи: CONTEXT_CACHE_HIT, CONTEXT_CACHE_MISS.
 
-**Контекст-диета:** PAPAYU_CONTEXT_MAX_FILES=8, PAPAYU_CONTEXT_MAX_FILE_CHARS=20000, PAPAYU_CONTEXT_MAX_TOTAL_CHARS=120000. Файлы: head+tail truncation. Лог: CONTEXT_DIET_APPLIED.
+**Контекст-диета:** см. раздел «Контекст-диета» ниже.
+
+**Trace:** при `PAPAYU_TRACE=1` в трассу добавляются `context_stats` (context_files_count, context_files_dropped_count, context_total_chars, context_logs_chars, context_truncated_files_count) и `cache_stats` (hits/misses по типам env/logs/read/search, hit_rate).
 
 ### Fix-plan режим (user.output_format)
 
@@ -125,6 +127,30 @@ LLM должен вернуть **только валидный JSON** — ли�
 4. `summary` используется если есть; иначе формируется в коде.
 5. `context_requests` — выполняется в следующем раунде (до MAX_CONTEXT_ROUNDS).
 6. `memory_patch` — применяется только ключи из whitelist.
+
+---
+
+---
+
+## Контекст-диета (поведение рантайма)
+
+Контекст может быть урезан для контроля стоимости токенов и стабильности ответов.
+
+**Env-переменные лимитов:**
+| Переменная | По умолчанию | Описание |
+|------------|--------------|----------|
+| `PAPAYU_CONTEXT_MAX_FILES` | 8 | Макс. число FILE/SEARCH/LOGS/ENV блоков в FULFILLED_CONTEXT |
+| `PAPAYU_CONTEXT_MAX_FILE_CHARS` | 20000 | Макс. символов на один файл (read_file) |
+| `PAPAYU_CONTEXT_MAX_TOTAL_CHARS` | 120000 | Макс. символов всего блока FULFILLED_CONTEXT |
+| `PAPAYU_CONTEXT_MAX_LOG_CHARS` | 12000 | Резерв для логов (в текущей реализации не используется) |
+
+**Порядок урезания:** при нехватке budget — search hits, logs; FILE-блоки (запрошенные read_file) — последними; для priority=0 файлов гарантируется минимум 4k chars даже при нехватке total budget.
+
+**Truncation:** при превышении MAX_FILE_CHARS — head+tail (60/40) с маркером `...[TRUNCATED N chars]...`.
+
+**Лог:** `CONTEXT_DIET_APPLIED files=N dropped=M truncated=T total_chars=C` при dropped>0 или truncated>0.
+
+**Trace:** в `context_stats` — context_files_count, context_files_dropped_count, context_total_chars, context_logs_chars, context_truncated_files_count.
 
 ---
 

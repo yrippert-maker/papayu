@@ -47,16 +47,58 @@ pub enum ContextCacheKey {
     Search { query: String, glob: Option<String> },
 }
 
+/// Статистика кеша (hits/misses по типам).
+#[derive(Default, Clone, Debug)]
+pub struct CacheStats {
+    pub env_hits: u32,
+    pub env_misses: u32,
+    pub logs_hits: u32,
+    pub logs_misses: u32,
+    pub read_hits: u32,
+    pub read_misses: u32,
+    pub search_hits: u32,
+    pub search_misses: u32,
+}
+
+impl CacheStats {
+    pub fn total_hits(&self) -> u32 {
+        self.env_hits + self.logs_hits + self.read_hits + self.search_hits
+    }
+    pub fn total_misses(&self) -> u32 {
+        self.env_misses + self.logs_misses + self.read_misses + self.search_misses
+    }
+    pub fn hit_rate(&self) -> f64 {
+        let t = self.total_hits() + self.total_misses();
+        if t == 0 {
+            0.0
+        } else {
+            self.total_hits() as f64 / t as f64
+        }
+    }
+}
+
+/// Статистика контекста (диета).
+#[derive(Default, Clone, Debug)]
+pub struct ContextStats {
+    pub context_files_count: u32,
+    pub context_files_dropped_count: u32,
+    pub context_total_chars: usize,
+    pub context_logs_chars: usize,
+    pub context_truncated_files_count: u32,
+}
+
 /// Кеш контекста для сессии (plan-цикла).
 #[derive(Default)]
 pub struct ContextCache {
     map: HashMap<ContextCacheKey, String>,
+    pub cache_stats: CacheStats,
 }
 
 impl ContextCache {
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
+            cache_stats: CacheStats::default(),
         }
     }
 
@@ -66,6 +108,10 @@ impl ContextCache {
 
     pub fn put(&mut self, key: ContextCacheKey, value: String) {
         self.map.insert(key, value);
+    }
+
+    pub fn stats(&self) -> &CacheStats {
+        &self.cache_stats
     }
 }
 
@@ -130,6 +176,12 @@ fn gather_env() -> String {
     lines.join("\n")
 }
 
+/// Результат fulfill_context_requests: текст + статистика контекста.
+pub struct FulfillResult {
+    pub content: String,
+    pub context_stats: ContextStats,
+}
+
 /// Выполняет context_requests от модели и возвращает текст для добавления в user message.
 /// Использует кеш, если передан; логирует CONTEXT_CACHE_HIT/MISS при trace_id.
 pub fn fulfill_context_requests(
@@ -138,8 +190,9 @@ pub fn fulfill_context_requests(
     max_log_lines: usize,
     mut cache: Option<&mut ContextCache>,
     trace_id: Option<&str>,
-) -> String {
+) -> FulfillResult {
     let mut parts = Vec::new();
+    let mut logs_chars: usize = 0;
     for r in requests {
         let obj = match r.as_object() {
             Some(o) => o,
@@ -160,12 +213,15 @@ pub fn fulfill_context_requests(
                         end,
                     };
                     let content = if let Some(ref mut c) = cache {
-                        if let Some(v) = c.get(&key) {
+                        let hit = c.get(&key).map(|v| v.clone());
+                        if let Some(v) = hit {
+                            c.cache_stats.read_hits += 1;
                             if let Some(tid) = trace_id {
                                 eprintln!("[{}] CONTEXT_CACHE_HIT key=read_file path={}", tid, path);
                             }
-                            v.clone()
+                            v
                         } else {
+                            c.cache_stats.read_misses += 1;
                             let v = read_file_snippet(project_root, path, start as usize, end as usize);
                             let out = format!("FILE[{}]:\n{}", path, v);
                             if let Some(tid) = trace_id {
@@ -189,12 +245,15 @@ pub fn fulfill_context_requests(
                         glob: glob.clone(),
                     };
                     let content = if let Some(ref mut c) = cache {
-                        if let Some(v) = c.get(&key) {
+                        let hit = c.get(&key).map(|v| v.clone());
+                        if let Some(v) = hit {
+                            c.cache_stats.search_hits += 1;
                             if let Some(tid) = trace_id {
                                 eprintln!("[{}] CONTEXT_CACHE_HIT key=search query={}", tid, query);
                             }
-                            v.clone()
+                            v
                         } else {
+                            c.cache_stats.search_misses += 1;
                             let hits = search_in_project(project_root, query, glob.as_deref());
                             let out = format!("SEARCH[{}]:\n{}", query, hits.join("\n"));
                             if let Some(tid) = trace_id {
@@ -220,14 +279,17 @@ pub fn fulfill_context_requests(
                     source: source.to_string(),
                     last_n,
                 };
-                let content = if let Some(ref mut c) = cache {
-                    if let Some(v) = c.get(&key) {
-                        if let Some(tid) = trace_id {
-                            eprintln!("[{}] CONTEXT_CACHE_HIT key=logs source={}", tid, source);
-                        }
-                        v.clone()
-                    } else {
-                        let v = format!(
+                    let content = if let Some(ref mut c) = cache {
+                        let hit = c.get(&key).map(|v| v.clone());
+                        if let Some(v) = hit {
+                            c.cache_stats.logs_hits += 1;
+                            if let Some(tid) = trace_id {
+                                eprintln!("[{}] CONTEXT_CACHE_HIT key=logs source={}", tid, source);
+                            }
+                            v
+                        } else {
+                            c.cache_stats.logs_misses += 1;
+                            let v = format!(
                             "LOGS[{}]: (last_n={}; приложение не имеет доступа к логам runtime — передай вывод в запросе)\n",
                             source, last_n
                         );
@@ -243,18 +305,22 @@ pub fn fulfill_context_requests(
                         source, last_n
                     )
                 };
+                logs_chars += content.len();
                 parts.push(content);
             }
             "env" => {
                 let key = ContextCacheKey::Env;
-                let content = if let Some(ref mut c) = cache {
-                    if let Some(v) = c.get(&key) {
-                        if let Some(tid) = trace_id {
-                            eprintln!("[{}] CONTEXT_CACHE_HIT key=env", tid);
-                        }
-                        v.clone()
-                    } else {
-                        let v = format!("ENV (повторно):\n{}", gather_env());
+                    let content = if let Some(ref mut c) = cache {
+                        let hit = c.get(&key).map(|v| v.clone());
+                        if let Some(v) = hit {
+                            c.cache_stats.env_hits += 1;
+                            if let Some(tid) = trace_id {
+                                eprintln!("[{}] CONTEXT_CACHE_HIT key=env", tid);
+                            }
+                            v
+                        } else {
+                            c.cache_stats.env_misses += 1;
+                            let v = format!("ENV (повторно):\n{}", gather_env());
                         if let Some(tid) = trace_id {
                             eprintln!("[{}] CONTEXT_CACHE_MISS key=env size={}", tid, v.len());
                         }
@@ -270,27 +336,47 @@ pub fn fulfill_context_requests(
         }
     }
     if parts.is_empty() {
-        String::new()
+        FulfillResult {
+            content: String::new(),
+            context_stats: ContextStats::default(),
+        }
     } else {
         let max_files = context_max_files();
         let max_total = context_max_total_chars();
+        const MIN_CHARS_FOR_PRIORITY0: usize = 4096;
         let header = "\n\nFULFILLED_CONTEXT:\n";
         let mut total_chars = header.len();
         let mut result_parts = Vec::with_capacity(parts.len().min(max_files));
         let mut dropped = 0;
+        let mut truncated = 0;
         for (_i, p) in parts.iter().enumerate() {
             if result_parts.len() >= max_files {
                 dropped += 1;
                 continue;
             }
             let part_len = p.len() + if result_parts.is_empty() { 0 } else { 2 };
+            let budget_left = max_total.saturating_sub(total_chars);
             if total_chars + part_len > max_total && !result_parts.is_empty() {
-                dropped += 1;
+                let is_file = p.starts_with("FILE[");
+                if is_file && budget_left >= MIN_CHARS_FOR_PRIORITY0 {
+                    let to_add = if p.len() > budget_left {
+                        truncated += 1;
+                        let head = (budget_left as f32 * 0.6) as usize;
+                        format!("{}...[TRUNCATED]...", &p[..head.min(p.len())])
+                    } else {
+                        p.clone()
+                    };
+                    total_chars += to_add.len() + if result_parts.is_empty() { 0 } else { 2 };
+                    result_parts.push(to_add);
+                } else {
+                    dropped += 1;
+                }
                 continue;
             }
             let to_add = if total_chars + part_len > max_total {
                 let allowed = max_total - total_chars - 30;
                 if allowed > 100 {
+                    truncated += 1;
                     format!("{}...[TRUNCATED]...", &p[..allowed.min(p.len())])
                 } else {
                     p.clone()
@@ -301,15 +387,24 @@ pub fn fulfill_context_requests(
             total_chars += to_add.len() + if result_parts.is_empty() { 0 } else { 2 };
             result_parts.push(to_add);
         }
+        let content = format!("{}{}", header, result_parts.join("\n\n"));
+        let files_in_result = result_parts.iter().filter(|s| s.starts_with("FILE[")).count() as u32;
+        let context_stats = ContextStats {
+            context_files_count: files_in_result,
+            context_files_dropped_count: dropped as u32,
+            context_total_chars: total_chars,
+            context_logs_chars: logs_chars,
+            context_truncated_files_count: truncated,
+        };
         if let Some(tid) = trace_id {
-            if dropped > 0 {
+            if dropped > 0 || truncated > 0 {
                 eprintln!(
-                    "[{}] CONTEXT_DIET_APPLIED files={} dropped={} total_chars={}",
-                    tid, result_parts.len(), dropped, total_chars
+                    "[{}] CONTEXT_DIET_APPLIED files={} dropped={} truncated={} total_chars={}",
+                    tid, result_parts.len(), dropped, truncated, total_chars
                 );
             }
         }
-        format!("{}{}", header, result_parts.join("\n\n"))
+        FulfillResult { content, context_stats }
     }
 }
 
@@ -527,6 +622,21 @@ mod tests {
         };
         cache.put(key.clone(), "LOGS[runtime]: ...".to_string());
         assert!(cache.get(&key).is_some());
+    }
+
+    #[test]
+    fn test_cache_logs_key_includes_last_n() {
+        let mut cache = ContextCache::new();
+        cache.put(
+            ContextCacheKey::Logs { source: "runtime".to_string(), last_n: 200 },
+            "LOGS last_n=200".to_string(),
+        );
+        cache.put(
+            ContextCacheKey::Logs { source: "runtime".to_string(), last_n: 500 },
+            "LOGS last_n=500".to_string(),
+        );
+        assert!(cache.get(&ContextCacheKey::Logs { source: "runtime".to_string(), last_n: 200 }).unwrap().contains("200"));
+        assert!(cache.get(&ContextCacheKey::Logs { source: "runtime".to_string(), last_n: 500 }).unwrap().contains("500"));
     }
 
     #[test]

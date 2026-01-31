@@ -1,0 +1,44 @@
+{
+  "protocol": {
+    "schema_version": 1,
+    "schema_hash": "4410694d339f9c7b81566da48aabd498ae9d15a229d1d69b10fe7a2eb8d96e7e"
+  },
+  "request": {
+    "mode": "apply",
+    "input_chars": 10000,
+    "token_budget": 4096,
+    "strict_json": true,
+    "provider": "openai",
+    "model": "gpt-4o-mini"
+  },
+  "context": {
+    "context_stats": {
+      "context_files_count": 1,
+      "context_files_dropped_count": 0,
+      "context_total_chars": 2000,
+      "context_logs_chars": 0,
+      "context_truncated_files_count": 0
+    },
+    "cache_stats": {
+      "env_hits": 0,
+      "env_misses": 1,
+      "logs_hits": 0,
+      "logs_misses": 0,
+      "read_hits": 1,
+      "read_misses": 0,
+      "search_hits": 0,
+      "search_misses": 0,
+      "hit_rate": 0.5
+    }
+  },
+  "result": {
+    "validated_json": {
+      "actions": [
+        {"kind": "UPDATE_FILE", "path": "src/secret.rs", "content": "// changed"}
+      ],
+      "summary": "Updated"
+    },
+    "validation_outcome": "err",
+    "error_code": "ERR_UPDATE_WITHOUT_BASE: UPDATE_FILE path 'src/secret.rs' not read in plan"
+  }
+}

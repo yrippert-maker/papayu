@@ -8,6 +8,13 @@ tests/
 └── fixtures/           # Тестовые фикстуры (минимальные проекты)
     ├── minimal-node/   # Node.js проект без README
     └── minimal-rust/   # Rust проект без README
+
+docs/golden_traces/     # Эталонные трассы (регрессия, без raw_content)
+├── README.md
+└── v1/                 # Protocol v1 fixtures
+    001_fix_bug_plan.json
+    002_fix_bug_apply.json
+    ...
 ```
 
 ## Юнит-тесты (Rust)
@@ -20,6 +27,7 @@ cargo test
 ```
 
 Текущие тесты покрывают:
+- `golden_traces_v1_validate` — валидация fixtures в `docs/golden_traces/v1/` (schema_version, schema_hash, parse, validate_actions, NO_CHANGES)
 - `detect_project_type` — определение типа проекта
 - `get_project_limits` — лимиты по типу проекта
 - `is_protected_file` — защита служебных файлов

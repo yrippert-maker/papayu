@@ -861,6 +861,7 @@ pub async fn plan(
     let mut repair_done = false;
     let mut skip_response_format = false; // capability detection: fallback при ошибке response_format
     let mut context_cache = context::ContextCache::new();
+    let mut last_context_stats: Option<context::ContextStats> = None;
 
     let (last_actions, last_summary_override, last_plan_json, last_context_for_return) = loop {
         let effective_response_format = if skip_response_format {
@@ -1059,7 +1060,8 @@ pub async fn plan(
                 Some(&mut context_cache),
                 Some(&trace_id),
             );
-            user_message.push_str(&fulfilled);
+            last_context_stats = Some(fulfilled.context_stats);
+            user_message.push_str(&fulfilled.content);
             round += 1;
             continue;
         }
@@ -1102,6 +1104,27 @@ pub async fn plan(
         "actions_count": last_actions.len(),
         "validated_json": last_plan_json,
     });
+    if let Some(ref cs) = last_context_stats {
+        trace_val["context_stats"] = serde_json::json!({
+            "context_files_count": cs.context_files_count,
+            "context_files_dropped_count": cs.context_files_dropped_count,
+            "context_total_chars": cs.context_total_chars,
+            "context_logs_chars": cs.context_logs_chars,
+            "context_truncated_files_count": cs.context_truncated_files_count,
+        });
+    }
+    let cache_stats = context_cache.stats();
+    trace_val["cache_stats"] = serde_json::json!({
+        "env_hits": cache_stats.env_hits,
+        "env_misses": cache_stats.env_misses,
+        "logs_hits": cache_stats.logs_hits,
+        "logs_misses": cache_stats.logs_misses,
+        "read_hits": cache_stats.read_hits,
+        "read_misses": cache_stats.read_misses,
+        "search_hits": cache_stats.search_hits,
+        "search_misses": cache_stats.search_misses,
+        "hit_rate": cache_stats.hit_rate(),
+    });
     write_trace(path, &trace_id, &mut trace_val);
 
     Ok(AgentPlan {
@@ -1123,6 +1146,8 @@ mod tests {
         validate_update_without_base, FIX_PLAN_SYSTEM_PROMPT, LLM_PLAN_SCHEMA_VERSION,
     };
     use crate::types::{Action, ActionKind};
+    use std::fs;
+    use std::path::Path;
 
     #[test]
     fn test_schema_version_is_one() {
@@ -1348,5 +1373,98 @@ mod tests {
         let actions = parse_actions_from_json(&actions_str).unwrap();
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].path, "src");
+    }
+
+    #[test]
+    fn golden_traces_v1_validate() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/golden_traces/v1");
+        if !dir.exists() {
+            return;
+        }
+        let expected_schema_hash = schema_hash();
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            let s = fs::read_to_string(&path).unwrap_or_else(|_| panic!("read {}", name));
+            let v: serde_json::Value =
+                serde_json::from_str(&s).unwrap_or_else(|e| panic!("{}: json {}", name, e));
+
+            assert_eq!(
+                v.get("protocol")
+                    .and_then(|p| p.get("schema_version"))
+                    .and_then(|x| x.as_u64()),
+                Some(1),
+                "{}: schema_version",
+                name
+            );
+            let sh = v.get("protocol")
+                .and_then(|p| p.get("schema_hash"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            assert_eq!(sh, expected_schema_hash, "{}: schema_hash", name);
+
+            let validated = v.get("result")
+                .and_then(|r| r.get("validated_json"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if validated.is_null() {
+                continue;
+            }
+            super::validate_json_against_schema(&validated).unwrap_or_else(|e| {
+                panic!("{}: schema validation: {}", name, e)
+            });
+
+            let validated_str = serde_json::to_string(&validated).unwrap();
+            let parsed = super::parse_plan_response(&validated_str)
+                .unwrap_or_else(|e| panic!("{}: parse validated_json: {}", name, e));
+
+            if v.get("result")
+                .and_then(|r| r.get("validation_outcome"))
+                .and_then(|x| x.as_str())
+                == Some("ok")
+            {
+                assert!(
+                    validate_actions(&parsed.actions).is_ok(),
+                    "{}: validate_actions",
+                    name
+                );
+            }
+
+            let mode = v.get("request")
+                .and_then(|r| r.get("mode"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if mode == "apply" && parsed.actions.is_empty() {
+                let summary = validated
+                    .get("summary")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                assert!(
+                    summary.starts_with("NO_CHANGES:"),
+                    "{}: apply with empty actions requires NO_CHANGES: prefix in summary",
+                    name
+                );
+            }
+
+            let ctx_stats = v.get("context").and_then(|c| c.get("context_stats"));
+            let cache_stats = v.get("context").and_then(|c| c.get("cache_stats"));
+            if let Some(stats) = ctx_stats {
+                for key in ["context_files_count", "context_total_chars"] {
+                    if let Some(n) = stats.get(key).and_then(|x| x.as_u64()) {
+                        assert!(n <= 1_000_000, "{}: {} reasonable", name, key);
+                    }
+                }
+            }
+            if let Some(stats) = cache_stats {
+                for key in ["env_hits", "env_misses", "read_hits", "read_misses"] {
+                    if let Some(n) = stats.get(key).and_then(|x| x.as_u64()) {
+                        assert!(n <= 1_000_000, "{}: cache {} reasonable", name, key);
+                    }
+                }
+            }
+        }
     }
 }
