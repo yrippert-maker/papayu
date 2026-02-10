@@ -35,6 +35,7 @@
   },
   "plugins": {
     "updater": {
+      "pubkey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK4VwAyEAGbYECPx+5y2xOxR9jFGSnZ0k0lE=\n-----END PUBLIC KEY-----",
       "endpoints": ["https://github.com/yrippert-maker/papayu/releases/latest/download/latest.json"]
     }
   }

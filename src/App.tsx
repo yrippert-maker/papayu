@@ -3,8 +3,6 @@ import Tasks from "./pages/Tasks";
 import Dashboard from "./pages/Dashboard";
 import ProjectNotes from "./pages/ProjectNotes";
 import Updates from "./pages/Updates";
-import Reglamenty from "./pages/Reglamenty";
-import TMCZakupki from "./pages/TMCZakupki";
 import Finances from "./pages/Finances";
 import Personnel from "./pages/Personnel";
 
@@ -91,36 +89,6 @@ function Layout({ children }: { children: React.ReactNode }) {
             Project Notes
           </NavLink>
           <NavLink
-            to="/reglamenty"
-            style={({ isActive }) => ({
-              padding: "10px 18px",
-              borderRadius: "999px",
-              fontWeight: 600,
-              fontSize: "14px",
-              textDecoration: "none",
-              color: isActive ? "#1e3a5f" : "rgba(255,255,255,0.9)",
-              background: isActive ? "#fff" : "rgba(255,255,255,0.15)",
-              transition: "background 0.2s ease, color 0.2s ease",
-            })}
-          >
-            Регламенты
-          </NavLink>
-          <NavLink
-            to="/tmc-zakupki"
-            style={({ isActive }) => ({
-              padding: "10px 18px",
-              borderRadius: "999px",
-              fontWeight: 600,
-              fontSize: "14px",
-              textDecoration: "none",
-              color: isActive ? "#1e3a5f" : "rgba(255,255,255,0.9)",
-              background: isActive ? "#fff" : "rgba(255,255,255,0.15)",
-              transition: "background 0.2s ease, color 0.2s ease",
-            })}
-          >
-            ТМЦ
-          </NavLink>
-          <NavLink
             to="/updates"
             style={({ isActive }) => ({
               padding: "10px 18px",
@@ -151,8 +119,6 @@ export default function App() {
           <Route path="/panel" element={<Dashboard />} />
           <Route path="/notes" element={<ProjectNotes />} />
           <Route path="/updates" element={<Updates />} />
-          <Route path="/reglamenty" element={<Reglamenty />} />
-          <Route path="/tmc-zakupki" element={<TMCZakupki />} />
           <Route path="/finances" element={<Finances />} />
           <Route path="/personnel" element={<Personnel />} />
         </Routes>

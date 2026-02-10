@@ -9,13 +9,14 @@
     "tauri": "tauri",
     "icons:export": "node scripts/export-icon.js",
     "golden": "cd src-tauri && cargo run --bin trace_to_golden --",
+    "install-app": "bash scripts/install-to-applications.sh",
     "test-protocol": "cd src-tauri && cargo test golden_traces"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.0",
+    "@tauri-apps/plugin-updater": "^2.9.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.20.0"
