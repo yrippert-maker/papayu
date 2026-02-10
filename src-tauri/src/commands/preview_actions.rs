@@ -54,9 +54,31 @@ pub fn preview_actions(payload: ApplyPayload) -> Result<PreviewResult, String> {
                 }
             }
             ActionKind::PatchFile => {
-                let (diff, summary, bytes_before, bytes_after) = preview_patch_file(root, &a.path, a.patch.as_deref().unwrap_or(""), a.base_sha256.as_deref().unwrap_or(""));
+                let (diff, summary, bytes_before, bytes_after) = preview_patch_file(
+                    root,
+                    &a.path,
+                    a.patch.as_deref().unwrap_or(""),
+                    a.base_sha256.as_deref().unwrap_or(""),
+                );
                 DiffItem {
                     kind: "patch".to_string(),
+                    path: a.path.clone(),
+                    old_content: None,
+                    new_content: Some(diff),
+                    summary,
+                    bytes_before,
+                    bytes_after,
+                }
+            }
+            ActionKind::EditFile => {
+                let (diff, summary, bytes_before, bytes_after) = preview_edit_file(
+                    root,
+                    &a.path,
+                    a.base_sha256.as_deref().unwrap_or(""),
+                    a.edits.as_deref().unwrap_or(&[]),
+                );
+                DiffItem {
+                    kind: "edit".to_string(),
                     path: a.path.clone(),
                     old_content: None,
                     new_content: Some(diff),
@@ -93,9 +115,18 @@ pub fn preview_actions(payload: ApplyPayload) -> Result<PreviewResult, String> {
     let files = diffs.len();
     let bytes = diffs
         .iter()
-        .map(|d| d.old_content.as_ref().unwrap_or(&String::new()).len() + d.new_content.as_ref().unwrap_or(&String::new()).len())
+        .map(|d| {
+            d.old_content.as_ref().unwrap_or(&String::new()).len()
+                + d.new_content.as_ref().unwrap_or(&String::new()).len()
+        })
         .sum::<usize>();
-    eprintln!("[PREVIEW_READY] path={} files={} diffs={} bytes={}", payload.root_path, files, diffs.len(), bytes);
+    eprintln!(
+        "[PREVIEW_READY] path={} files={} diffs={} bytes={}",
+        payload.root_path,
+        files,
+        diffs.len(),
+        bytes
+    );
     Ok(PreviewResult { diffs, summary })
 }
 
@@ -107,31 +138,146 @@ fn preview_patch_file(
     base_sha256: &str,
 ) -> (String, Option<String>, Option<usize>, Option<usize>) {
     if !looks_like_unified_diff(patch_text) {
-        return (patch_text.to_string(), Some("ERR_PATCH_NOT_UNIFIED: patch is not unified diff".into()), None, None);
+        return (
+            patch_text.to_string(),
+            Some("ERR_PATCH_NOT_UNIFIED: patch is not unified diff".into()),
+            None,
+            None,
+        );
     }
     let p = match safe_join(root, rel) {
         Ok(p) => p,
-        Err(_) => return (patch_text.to_string(), Some("ERR_INVALID_PATH".into()), None, None),
+        Err(_) => {
+            return (
+                patch_text.to_string(),
+                Some("ERR_INVALID_PATH".into()),
+                None,
+                None,
+            )
+        }
     };
     if !p.is_file() {
-        return (patch_text.to_string(), Some("ERR_BASE_MISMATCH: file not found".into()), None, None);
+        return (
+            patch_text.to_string(),
+            Some("ERR_BASE_MISMATCH: file not found".into()),
+            None,
+            None,
+        );
     }
     let old_bytes = match fs::read(&p) {
         Ok(b) => b,
-        Err(_) => return (patch_text.to_string(), Some("ERR_IO: cannot read file".into()), None, None),
+        Err(_) => {
+            return (
+                patch_text.to_string(),
+                Some("ERR_IO: cannot read file".into()),
+                None,
+                None,
+            )
+        }
     };
     let old_sha = sha256_hex(&old_bytes);
     if old_sha != base_sha256 {
-        return (patch_text.to_string(), Some(format!("ERR_BASE_MISMATCH: have {}, want {}", old_sha, base_sha256)), None, None);
+        return (
+            patch_text.to_string(),
+            Some(format!(
+                "ERR_BASE_MISMATCH: have {}, want {}",
+                old_sha, base_sha256
+            )),
+            None,
+            None,
+        );
     }
     let old_text = match String::from_utf8(old_bytes) {
         Ok(s) => s,
-        Err(_) => return (patch_text.to_string(), Some("ERR_NON_UTF8_FILE: PATCH_FILE требует UTF-8. Файл не UTF-8.".into()), None, None),
+        Err(_) => {
+            return (
+                patch_text.to_string(),
+                Some("ERR_NON_UTF8_FILE: PATCH_FILE требует UTF-8. Файл не UTF-8.".into()),
+                None,
+                None,
+            )
+        }
     };
     let bytes_before = old_text.len();
     match apply_unified_diff_to_text(&old_text, patch_text) {
-        Ok(new_text) => (patch_text.to_string(), None, Some(bytes_before), Some(new_text.len())),
-        Err(_) => (patch_text.to_string(), Some("ERR_PATCH_APPLY_FAILED: could not apply patch".into()), None, None),
+        Ok(new_text) => (
+            patch_text.to_string(),
+            None,
+            Some(bytes_before),
+            Some(new_text.len()),
+        ),
+        Err(_) => (
+            patch_text.to_string(),
+            Some("ERR_PATCH_APPLY_FAILED: could not apply patch".into()),
+            None,
+            None,
+        ),
+    }
+}
+
+/// Returns (unified_diff, summary, bytes_before, bytes_after) for EDIT_FILE.
+fn preview_edit_file(
+    root: &std::path::Path,
+    rel: &str,
+    base_sha256: &str,
+    edits: &[crate::types::EditOp],
+) -> (String, Option<String>, Option<usize>, Option<usize>) {
+    use crate::patch::apply_edit_file_to_text;
+    use diffy::create_patch;
+    let p = match safe_join(root, rel) {
+        Ok(p) => p,
+        Err(_) => return (String::new(), Some("ERR_INVALID_PATH".into()), None, None),
+    };
+    if !p.is_file() {
+        return (
+            String::new(),
+            Some("ERR_EDIT_BASE_MISMATCH: file not found".into()),
+            None,
+            None,
+        );
+    }
+    let old_bytes = match fs::read(&p) {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                String::new(),
+                Some("ERR_IO: cannot read file".into()),
+                None,
+                None,
+            )
+        }
+    };
+    let old_sha = sha256_hex(&old_bytes);
+    if old_sha != base_sha256 {
+        return (
+            String::new(),
+            Some(format!(
+                "ERR_EDIT_BASE_MISMATCH: have {}, want {}",
+                old_sha, base_sha256
+            )),
+            None,
+            None,
+        );
+    }
+    let old_text = match String::from_utf8(old_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                String::new(),
+                Some("ERR_NON_UTF8_FILE: EDIT_FILE requires utf-8".into()),
+                None,
+                None,
+            )
+        }
+    };
+    let bytes_before = old_text.len();
+    match apply_edit_file_to_text(&old_text, edits) {
+        Ok(new_text) => {
+            let patch = create_patch(&old_text, &new_text);
+            let diff = format!("{}", patch);
+            (diff, None, Some(bytes_before), Some(new_text.len()))
+        }
+        Err(e) => (String::new(), Some(e), None, None),
     }
 }
 
@@ -152,13 +298,14 @@ fn summarize(diffs: &[DiffItem]) -> String {
     let create = diffs.iter().filter(|d| d.kind == "create").count();
     let update = diffs.iter().filter(|d| d.kind == "update").count();
     let patch = diffs.iter().filter(|d| d.kind == "patch").count();
+    let edit = diffs.iter().filter(|d| d.kind == "edit").count();
     let delete = diffs.iter().filter(|d| d.kind == "delete").count();
     let mkdir = diffs.iter().filter(|d| d.kind == "mkdir").count();
     let rmdir = diffs.iter().filter(|d| d.kind == "rmdir").count();
     let blocked = diffs.iter().filter(|d| d.kind == "blocked").count();
     let mut s = format!(
-        "Создать: {}, изменить: {}, patch: {}, удалить: {}, mkdir: {}, rmdir: {}",
-        create, update, patch, delete, mkdir, rmdir
+        "Создать: {}, изменить: {}, patch: {}, edit: {}, удалить: {}, mkdir: {}, rmdir: {}",
+        create, update, patch, edit, delete, mkdir, rmdir
     );
     if blocked > 0 {
         s.push_str(&format!(", заблокировано: {}", blocked));
@@ -168,26 +315,48 @@ fn summarize(diffs: &[DiffItem]) -> String {
 
 fn is_protected_file(p: &str) -> bool {
     let lower = p.to_lowercase().replace('\\', "/");
-    if lower == ".env" || lower.ends_with("/.env") { return true; }
-    if lower.ends_with(".pem") || lower.ends_with(".key") || lower.ends_with(".p12") { return true; }
-    if lower.contains("id_rsa") { return true; }
-    if lower.contains("/secrets/") || lower.starts_with("secrets/") { return true; }
-    if lower.ends_with("cargo.lock") { return true; }
-    if lower.ends_with("package-lock.json") { return true; }
-    if lower.ends_with("pnpm-lock.yaml") { return true; }
-    if lower.ends_with("yarn.lock") { return true; }
-    if lower.ends_with("composer.lock") { return true; }
-    if lower.ends_with("poetry.lock") { return true; }
-    if lower.ends_with("pipfile.lock") { return true; }
+    if lower == ".env" || lower.ends_with("/.env") {
+        return true;
+    }
+    if lower.ends_with(".pem") || lower.ends_with(".key") || lower.ends_with(".p12") {
+        return true;
+    }
+    if lower.contains("id_rsa") {
+        return true;
+    }
+    if lower.contains("/secrets/") || lower.starts_with("secrets/") {
+        return true;
+    }
+    if lower.ends_with("cargo.lock") {
+        return true;
+    }
+    if lower.ends_with("package-lock.json") {
+        return true;
+    }
+    if lower.ends_with("pnpm-lock.yaml") {
+        return true;
+    }
+    if lower.ends_with("yarn.lock") {
+        return true;
+    }
+    if lower.ends_with("composer.lock") {
+        return true;
+    }
+    if lower.ends_with("poetry.lock") {
+        return true;
+    }
+    if lower.ends_with("pipfile.lock") {
+        return true;
+    }
     let bin_ext = [
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-        ".pdf", ".zip", ".7z", ".rar", ".dmg", ".pkg",
-        ".exe", ".dll", ".so", ".dylib", ".bin",
-        ".mp3", ".mp4", ".mov", ".avi",
-        ".wasm", ".class",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".zip", ".7z", ".rar", ".dmg",
+        ".pkg", ".exe", ".dll", ".so", ".dylib", ".bin", ".mp3", ".mp4", ".mov", ".avi", ".wasm",
+        ".class",
     ];
     for ext in bin_ext {
-        if lower.ends_with(ext) { return true; }
+        if lower.ends_with(ext) {
+            return true;
+        }
     }
     false
 }
@@ -195,9 +364,31 @@ fn is_protected_file(p: &str) -> bool {
 fn is_text_allowed(p: &str) -> bool {
     let lower = p.to_lowercase();
     let ok_ext = [
-        ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".toml", ".yaml", ".yml",
-        ".rs", ".py", ".go", ".java", ".kt", ".c", ".cpp", ".h", ".hpp",
-        ".css", ".scss", ".html", ".env", ".gitignore", ".editorconfig",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".json",
+        ".md",
+        ".txt",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".rs",
+        ".py",
+        ".go",
+        ".java",
+        ".kt",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".css",
+        ".scss",
+        ".html",
+        ".env",
+        ".gitignore",
+        ".editorconfig",
     ];
     ok_ext.iter().any(|e| lower.ends_with(e)) || !lower.contains('.')
 }

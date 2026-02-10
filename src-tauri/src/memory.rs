@@ -154,47 +154,88 @@ pub fn build_memory_block(mem: &EngineeringMemory) -> String {
     if !mem.user.is_default() {
         let mut user = serde_json::Map::new();
         if !mem.user.preferred_style.is_empty() {
-            user.insert("preferred_style".into(), serde_json::Value::String(mem.user.preferred_style.clone()));
+            user.insert(
+                "preferred_style".into(),
+                serde_json::Value::String(mem.user.preferred_style.clone()),
+            );
         }
         if mem.user.ask_budget > 0 {
-            user.insert("ask_budget".into(), serde_json::Value::Number(serde_json::Number::from(mem.user.ask_budget)));
+            user.insert(
+                "ask_budget".into(),
+                serde_json::Value::Number(serde_json::Number::from(mem.user.ask_budget)),
+            );
         }
         if !mem.user.risk_tolerance.is_empty() {
-            user.insert("risk_tolerance".into(), serde_json::Value::String(mem.user.risk_tolerance.clone()));
+            user.insert(
+                "risk_tolerance".into(),
+                serde_json::Value::String(mem.user.risk_tolerance.clone()),
+            );
         }
         if !mem.user.default_language.is_empty() {
-            user.insert("default_language".into(), serde_json::Value::String(mem.user.default_language.clone()));
+            user.insert(
+                "default_language".into(),
+                serde_json::Value::String(mem.user.default_language.clone()),
+            );
         }
         if !mem.user.output_format.is_empty() {
-            user.insert("output_format".into(), serde_json::Value::String(mem.user.output_format.clone()));
+            user.insert(
+                "output_format".into(),
+                serde_json::Value::String(mem.user.output_format.clone()),
+            );
         }
         obj.insert("user".into(), serde_json::Value::Object(user));
     }
     if !mem.project.is_default() {
         let mut project = serde_json::Map::new();
         if !mem.project.default_test_command.is_empty() {
-            project.insert("default_test_command".into(), serde_json::Value::String(mem.project.default_test_command.clone()));
+            project.insert(
+                "default_test_command".into(),
+                serde_json::Value::String(mem.project.default_test_command.clone()),
+            );
         }
         if !mem.project.default_lint_command.is_empty() {
-            project.insert("default_lint_command".into(), serde_json::Value::String(mem.project.default_lint_command.clone()));
+            project.insert(
+                "default_lint_command".into(),
+                serde_json::Value::String(mem.project.default_lint_command.clone()),
+            );
         }
         if !mem.project.default_format_command.is_empty() {
-            project.insert("default_format_command".into(), serde_json::Value::String(mem.project.default_format_command.clone()));
+            project.insert(
+                "default_format_command".into(),
+                serde_json::Value::String(mem.project.default_format_command.clone()),
+            );
         }
         if !mem.project.package_manager.is_empty() {
-            project.insert("package_manager".into(), serde_json::Value::String(mem.project.package_manager.clone()));
+            project.insert(
+                "package_manager".into(),
+                serde_json::Value::String(mem.project.package_manager.clone()),
+            );
         }
         if !mem.project.build_command.is_empty() {
-            project.insert("build_command".into(), serde_json::Value::String(mem.project.build_command.clone()));
+            project.insert(
+                "build_command".into(),
+                serde_json::Value::String(mem.project.build_command.clone()),
+            );
         }
         if !mem.project.src_roots.is_empty() {
-            project.insert("src_roots".into(), serde_json::to_value(&mem.project.src_roots).unwrap_or(serde_json::Value::Array(vec![])));
+            project.insert(
+                "src_roots".into(),
+                serde_json::to_value(&mem.project.src_roots)
+                    .unwrap_or(serde_json::Value::Array(vec![])),
+            );
         }
         if !mem.project.test_roots.is_empty() {
-            project.insert("test_roots".into(), serde_json::to_value(&mem.project.test_roots).unwrap_or(serde_json::Value::Array(vec![])));
+            project.insert(
+                "test_roots".into(),
+                serde_json::to_value(&mem.project.test_roots)
+                    .unwrap_or(serde_json::Value::Array(vec![])),
+            );
         }
         if !mem.project.ci_notes.is_empty() {
-            project.insert("ci_notes".into(), serde_json::Value::String(mem.project.ci_notes.clone()));
+            project.insert(
+                "ci_notes".into(),
+                serde_json::Value::String(mem.project.ci_notes.clone()),
+            );
         }
         obj.insert("project".into(), serde_json::Value::Object(project));
     }
@@ -223,28 +264,82 @@ pub fn apply_memory_patch(
         if key.starts_with("user.") {
             let field = &key[5..];
             match field {
-                "preferred_style" => if let Some(s) = value.as_str() { user.preferred_style = s.to_string(); },
-                "ask_budget" => if let Some(n) = value.as_u64() { user.ask_budget = n as u8; },
-                "risk_tolerance" => if let Some(s) = value.as_str() { user.risk_tolerance = s.to_string(); },
-                "default_language" => if let Some(s) = value.as_str() { user.default_language = s.to_string(); },
-                "output_format" => if let Some(s) = value.as_str() { user.output_format = s.to_string(); },
+                "preferred_style" => {
+                    if let Some(s) = value.as_str() {
+                        user.preferred_style = s.to_string();
+                    }
+                }
+                "ask_budget" => {
+                    if let Some(n) = value.as_u64() {
+                        user.ask_budget = n as u8;
+                    }
+                }
+                "risk_tolerance" => {
+                    if let Some(s) = value.as_str() {
+                        user.risk_tolerance = s.to_string();
+                    }
+                }
+                "default_language" => {
+                    if let Some(s) = value.as_str() {
+                        user.default_language = s.to_string();
+                    }
+                }
+                "output_format" => {
+                    if let Some(s) = value.as_str() {
+                        user.output_format = s.to_string();
+                    }
+                }
                 _ => {}
             }
         } else if key.starts_with("project.") {
             let field = &key[8..];
             match field {
-                "default_test_command" => if let Some(s) = value.as_str() { project.default_test_command = s.to_string(); },
-                "default_lint_command" => if let Some(s) = value.as_str() { project.default_lint_command = s.to_string(); },
-                "default_format_command" => if let Some(s) = value.as_str() { project.default_format_command = s.to_string(); },
-                "package_manager" => if let Some(s) = value.as_str() { project.package_manager = s.to_string(); },
-                "build_command" => if let Some(s) = value.as_str() { project.build_command = s.to_string(); },
-                "src_roots" => if let Some(arr) = value.as_array() {
-                    project.src_roots = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                },
-                "test_roots" => if let Some(arr) = value.as_array() {
-                    project.test_roots = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                },
-                "ci_notes" => if let Some(s) = value.as_str() { project.ci_notes = s.to_string(); },
+                "default_test_command" => {
+                    if let Some(s) = value.as_str() {
+                        project.default_test_command = s.to_string();
+                    }
+                }
+                "default_lint_command" => {
+                    if let Some(s) = value.as_str() {
+                        project.default_lint_command = s.to_string();
+                    }
+                }
+                "default_format_command" => {
+                    if let Some(s) = value.as_str() {
+                        project.default_format_command = s.to_string();
+                    }
+                }
+                "package_manager" => {
+                    if let Some(s) = value.as_str() {
+                        project.package_manager = s.to_string();
+                    }
+                }
+                "build_command" => {
+                    if let Some(s) = value.as_str() {
+                        project.build_command = s.to_string();
+                    }
+                }
+                "src_roots" => {
+                    if let Some(arr) = value.as_array() {
+                        project.src_roots = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                    }
+                }
+                "test_roots" => {
+                    if let Some(arr) = value.as_array() {
+                        project.test_roots = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                    }
+                }
+                "ci_notes" => {
+                    if let Some(s) = value.as_str() {
+                        project.ci_notes = s.to_string();
+                    }
+                }
                 _ => {}
             }
         }
@@ -292,9 +387,16 @@ mod tests {
     #[test]
     fn apply_patch_updates_user_and_project() {
         let mut patch = HashMap::new();
-        patch.insert("user.preferred_style".into(), serde_json::Value::String("brief".into()));
-        patch.insert("project.default_test_command".into(), serde_json::Value::String("pytest -q".into()));
-        let (user, project) = apply_memory_patch(&patch, &UserPrefs::default(), &ProjectPrefs::default());
+        patch.insert(
+            "user.preferred_style".into(),
+            serde_json::Value::String("brief".into()),
+        );
+        patch.insert(
+            "project.default_test_command".into(),
+            serde_json::Value::String("pytest -q".into()),
+        );
+        let (user, project) =
+            apply_memory_patch(&patch, &UserPrefs::default(), &ProjectPrefs::default());
         assert_eq!(user.preferred_style, "brief");
         assert_eq!(project.default_test_command, "pytest -q");
     }

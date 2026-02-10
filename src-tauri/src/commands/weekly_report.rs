@@ -1,5 +1,9 @@
 //! Weekly Report Analyzer: агрегация трасс и генерация отчёта через LLM.
 
+use super::trace_fields::{
+    trace_error_code, trace_has_action_kind, trace_protocol_fallback_reason,
+    trace_protocol_version_used,
+};
 use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -28,9 +32,37 @@ pub struct WeeklyStatsBundle {
     pub context: ContextAgg,
     pub cache: CacheAgg,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_search_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_search_cache_hit_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_early_stop_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_online_pages_ok: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<PreviousPeriodStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deltas: Option<DeltaStats>,
+    // v3 EDIT_FILE metrics
+    pub v3_apply_count: u64,
+    pub v3_edit_apply_count: u64,
+    pub v3_patch_apply_count: u64,
+    pub v3_edit_error_count: u64,
+    pub v3_err_edit_anchor_not_found_count: u64,
+    pub v3_err_edit_before_not_found_count: u64,
+    pub v3_err_edit_ambiguous_count: u64,
+    pub v3_err_edit_base_mismatch_count: u64,
+    pub v3_err_edit_apply_failed_count: u64,
+    pub v3_edit_fail_rate: f64,
+    pub v3_edit_anchor_not_found_rate: f64,
+    pub v3_edit_before_not_found_rate: f64,
+    pub v3_edit_ambiguous_rate: f64,
+    pub v3_edit_base_mismatch_rate: f64,
+    pub v3_edit_apply_failed_rate: f64,
+    pub v3_edit_to_patch_ratio: f64,
+    pub v3_patch_share_in_v3: f64,
+    pub v3_fallback_to_v2_count: u64,
+    pub v3_fallback_to_v2_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,11 +124,24 @@ pub struct WeeklyReportResult {
 /// Нормализует error_code в группу для breakdown.
 fn group_error_code(code: &str) -> &'static str {
     let code = code.to_uppercase();
-    if code.contains("SCHEMA") || code.contains("JSON_PARSE") || code.contains("JSON_EXTRACT") || code.contains("VALIDATION") {
+    if code.contains("ERR_EDIT_") {
+        "EDIT"
+    } else if code.contains("SCHEMA")
+        || code.contains("JSON_PARSE")
+        || code.contains("JSON_EXTRACT")
+        || code.contains("VALIDATION")
+    {
         "LLM_FORMAT"
-    } else if code.contains("PATCH") || code.contains("BASE_MISMATCH") || code.contains("BASE_SHA256") {
+    } else if code.contains("PATCH")
+        || code.contains("BASE_MISMATCH")
+        || code.contains("BASE_SHA256")
+    {
         "PATCH"
-    } else if code.contains("PATH") || code.contains("CONFLICT") || code.contains("PROTECTED") || code.contains("UPDATE_WITHOUT_BASE") {
+    } else if code.contains("PATH")
+        || code.contains("CONFLICT")
+        || code.contains("PROTECTED")
+        || code.contains("UPDATE_WITHOUT_BASE")
+    {
         "SAFETY"
     } else if code.contains("NON_UTF8") || code.contains("UTF8") || code.contains("ENCODING") {
         "ENCODING"
@@ -128,20 +173,30 @@ fn golden_trace_error_codes(project_path: &Path) -> std::collections::HashSet<St
         search_dirs.push(parent.to_path_buf());
     }
     for base in search_dirs {
-        for subdir in ["v1", "v2"] {
+        for subdir in ["v1", "v2", "v3"] {
             let dir = base.join("docs").join("golden_traces").join(subdir);
             if !dir.exists() {
                 continue;
             }
-            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                let Ok(content) = fs::read_to_string(&path) else { continue };
-                let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
-                if let Some(ec) = val.get("result").and_then(|r| r.get("error_code")).and_then(|v| v.as_str()) {
+                let Ok(content) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else {
+                    continue;
+                };
+                if let Some(ec) = val
+                    .get("result")
+                    .and_then(|r| r.get("error_code"))
+                    .and_then(|v| v.as_str())
+                {
                     if let Some(b) = extract_base_error_code(ec) {
                         codes.insert(b);
                     }
@@ -197,8 +252,10 @@ pub fn collect_traces(
         if mtime < from_secs || mtime > to_secs {
             continue;
         }
-        let content = fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let trace: serde_json::Value = serde_json::from_str(&content).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+        let content =
+            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+        let trace: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("parse {}: {}", path.display(), e))?;
         out.push((mtime, trace));
     }
     Ok(out)
@@ -231,29 +288,134 @@ pub fn aggregate_weekly(
     let mut cache_search_misses: u64 = 0;
     let mut cache_logs_hits: u64 = 0;
     let mut cache_logs_misses: u64 = 0;
+    let mut online_search_count: u64 = 0;
+    let mut online_search_cache_hits: u64 = 0;
+    let mut online_early_stops: u64 = 0;
+    let mut online_pages_ok_sum: u64 = 0;
+    // v3 EDIT_FILE metrics
+    let mut v3_apply_count: u64 = 0;
+    let mut v3_edit_apply_count: u64 = 0;
+    let mut v3_patch_apply_count: u64 = 0;
+    let mut v3_edit_error_count: u64 = 0;
+    let mut v3_err_edit_anchor_not_found: u64 = 0;
+    let mut v3_err_edit_before_not_found: u64 = 0;
+    let mut v3_err_edit_ambiguous: u64 = 0;
+    let mut v3_err_edit_base_mismatch: u64 = 0;
+    let mut v3_err_edit_apply_failed: u64 = 0;
+    let mut v3_fallback_to_v2_count: u64 = 0;
 
     for (_, trace) in traces {
         let event = trace.get("event").and_then(|v| v.as_str());
+        if event == Some("ONLINE_RESEARCH") {
+            online_search_count += 1;
+            if trace
+                .get("online_search_cache_hit")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                online_search_cache_hits += 1;
+            }
+            if trace
+                .get("online_early_stop")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                online_early_stops += 1;
+            }
+            online_pages_ok_sum += trace
+                .get("online_pages_ok")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            continue;
+        }
         if event != Some("LLM_PLAN_OK") {
             if event.is_some() {
-                let code = trace
-                    .get("error_code")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| trace.get("error").and_then(|v| v.as_str()));
-                if let Some(c) = code {
-                    *error_code_counts.entry(c.to_string()).or_insert(0) += 1;
+                let code = trace_error_code(trace);
+                if let Some(ref c) = code {
+                    *error_code_counts.entry(c.clone()).or_insert(0) += 1;
+                    if trace_protocol_version_used(trace) == Some(3) && c.starts_with("ERR_EDIT_") {
+                        v3_edit_error_count += 1;
+                        let base = extract_base_error_code(c).unwrap_or_else(|| c.clone());
+                        match base.as_str() {
+                            "ERR_EDIT_ANCHOR_NOT_FOUND" => v3_err_edit_anchor_not_found += 1,
+                            "ERR_EDIT_BEFORE_NOT_FOUND" => v3_err_edit_before_not_found += 1,
+                            "ERR_EDIT_AMBIGUOUS" => v3_err_edit_ambiguous += 1,
+                            "ERR_EDIT_BASE_MISMATCH" | "ERR_EDIT_BASE_SHA256_INVALID" => {
+                                v3_err_edit_base_mismatch += 1
+                            }
+                            "ERR_EDIT_APPLY_FAILED" => v3_err_edit_apply_failed += 1,
+                            _ => {}
+                        }
+                    }
                 }
             }
             continue;
         }
         apply_count += 1;
 
-        if trace.get("protocol_repair_attempt").and_then(|v| v.as_u64()) == Some(0) {
+        // v3 metrics via trace field adapters
+        let protocol_ver = trace_protocol_version_used(trace);
+        let is_v3 = protocol_ver == Some(3);
+        let fallback_reason = trace_protocol_fallback_reason(trace).unwrap_or_default();
+        let is_v3_fallback_edit = fallback_reason.starts_with("ERR_EDIT_");
+
+        if is_v3 || is_v3_fallback_edit {
+            v3_apply_count += 1;
+            let has_edit = trace_has_action_kind(trace, "EDIT_FILE");
+            let has_patch = trace_has_action_kind(trace, "PATCH_FILE");
+            if has_edit {
+                v3_edit_apply_count += 1;
+            }
+            if has_patch {
+                v3_patch_apply_count += 1;
+            }
+            if trace
+                .get("protocol_fallback_attempted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                && is_v3_fallback_edit
+            {
+                v3_fallback_to_v2_count += 1;
+                v3_edit_error_count += 1;
+                let base = extract_base_error_code(&fallback_reason)
+                    .unwrap_or_else(|| fallback_reason.clone());
+                match base.as_str() {
+                    "ERR_EDIT_ANCHOR_NOT_FOUND" => v3_err_edit_anchor_not_found += 1,
+                    "ERR_EDIT_BEFORE_NOT_FOUND" => v3_err_edit_before_not_found += 1,
+                    "ERR_EDIT_AMBIGUOUS" => v3_err_edit_ambiguous += 1,
+                    "ERR_EDIT_BASE_MISMATCH" | "ERR_EDIT_BASE_SHA256_INVALID" => {
+                        v3_err_edit_base_mismatch += 1
+                    }
+                    "ERR_EDIT_APPLY_FAILED" => v3_err_edit_apply_failed += 1,
+                    _ => {}
+                }
+            }
+            if is_v3_fallback_edit && !is_v3 {
+                // Fallback trace: schema_version is v2, but the failed attempt had EDIT
+                v3_edit_apply_count += 1;
+            }
+        }
+
+        if trace
+            .get("protocol_repair_attempt")
+            .and_then(|v| v.as_u64())
+            == Some(0)
+        {
             repair_attempt_count += 1;
         }
-        if trace.get("protocol_repair_attempt").and_then(|v| v.as_u64()) == Some(1) {
-            let fallback_attempted = trace.get("protocol_fallback_attempted").and_then(|v| v.as_bool()).unwrap_or(false);
-            let reason = trace.get("protocol_fallback_reason").and_then(|v| v.as_str()).unwrap_or("");
+        if trace
+            .get("protocol_repair_attempt")
+            .and_then(|v| v.as_u64())
+            == Some(1)
+        {
+            let fallback_attempted = trace
+                .get("protocol_fallback_attempted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let reason = trace
+                .get("protocol_fallback_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if !fallback_attempted || reason.is_empty() {
                 eprintln!(
                     "[trace] WEEKLY_REPORT_INVARIANT_VIOLATION protocol_repair_attempt=1 expected protocol_fallback_attempted=true and protocol_fallback_reason non-empty, got fallback_attempted={} reason_len={}",
@@ -264,7 +426,11 @@ pub fn aggregate_weekly(
             repair_to_fallback_count += 1;
         }
 
-        if trace.get("protocol_fallback_attempted").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if trace
+            .get("protocol_fallback_attempted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             fallback_count += 1;
             let reason = trace
                 .get("protocol_fallback_reason")
@@ -277,9 +443,16 @@ pub fn aggregate_weekly(
             }
         }
 
-        if trace.get("repair_injected_sha256").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if trace
+            .get("repair_injected_sha256")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             sha_injection_count += 1;
-            if let Some(paths) = trace.get("repair_injected_paths").and_then(|v| v.as_array()) {
+            if let Some(paths) = trace
+                .get("repair_injected_paths")
+                .and_then(|v| v.as_array())
+            {
                 for p in paths {
                     if let Some(s) = p.as_str() {
                         *path_counts.entry(s.to_string()).or_insert(0) += 1;
@@ -295,7 +468,10 @@ pub fn aggregate_weekly(
             if let Some(n) = ctx.get("context_files_count").and_then(|v| v.as_u64()) {
                 context_files_count.push(n);
             }
-            if let Some(n) = ctx.get("context_files_dropped_count").and_then(|v| v.as_u64()) {
+            if let Some(n) = ctx
+                .get("context_files_dropped_count")
+                .and_then(|v| v.as_u64())
+            {
                 context_dropped.push(n);
             }
         }
@@ -305,13 +481,28 @@ pub fn aggregate_weekly(
                 cache_hit_rates.push(r);
             }
             cache_env_hits += cache.get("env_hits").and_then(|v| v.as_u64()).unwrap_or(0);
-            cache_env_misses += cache.get("env_misses").and_then(|v| v.as_u64()).unwrap_or(0);
+            cache_env_misses += cache
+                .get("env_misses")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             cache_read_hits += cache.get("read_hits").and_then(|v| v.as_u64()).unwrap_or(0);
-            cache_read_misses += cache.get("read_misses").and_then(|v| v.as_u64()).unwrap_or(0);
-            cache_search_hits += cache.get("search_hits").and_then(|v| v.as_u64()).unwrap_or(0);
-            cache_search_misses += cache.get("search_misses").and_then(|v| v.as_u64()).unwrap_or(0);
+            cache_read_misses += cache
+                .get("read_misses")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            cache_search_hits += cache
+                .get("search_hits")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            cache_search_misses += cache
+                .get("search_misses")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             cache_logs_hits += cache.get("logs_hits").and_then(|v| v.as_u64()).unwrap_or(0);
-            cache_logs_misses += cache.get("logs_misses").and_then(|v| v.as_u64()).unwrap_or(0);
+            cache_logs_misses += cache
+                .get("logs_misses")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
         }
     }
 
@@ -332,7 +523,10 @@ pub fn aggregate_weekly(
     top_paths.sort_by(|a, b| b.1.cmp(&a.1));
     top_paths.truncate(10);
 
-    let mut top_errors: Vec<(String, u64)> = error_code_counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut top_errors: Vec<(String, u64)> = error_code_counts
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     top_errors.sort_by(|a, b| b.1.cmp(&a.1));
     top_errors.truncate(10);
 
@@ -343,7 +537,9 @@ pub fn aggregate_weekly(
     }
     for (reason, count) in &fallback_by_reason {
         let group = group_error_code(reason).to_string();
-        *error_codes_by_group.entry(format!("fallback:{}", group)).or_insert(0) += count;
+        *error_codes_by_group
+            .entry(format!("fallback:{}", group))
+            .or_insert(0) += count;
     }
 
     let mut fallback_by_group: BTreeMap<String, u64> = BTreeMap::new();
@@ -351,6 +547,19 @@ pub fn aggregate_weekly(
         let group = group_error_code(reason).to_string();
         *fallback_by_group.entry(group).or_insert(0) += count;
     }
+
+    let denom_edit = v3_edit_apply_count.max(1) as f64;
+    let denom_v3 = v3_apply_count.max(1) as f64;
+    let denom_patch = v3_patch_apply_count.max(1) as f64;
+    let v3_edit_fail_rate = v3_edit_error_count as f64 / denom_edit;
+    let v3_edit_anchor_not_found_rate = v3_err_edit_anchor_not_found as f64 / denom_edit;
+    let v3_edit_before_not_found_rate = v3_err_edit_before_not_found as f64 / denom_edit;
+    let v3_edit_ambiguous_rate = v3_err_edit_ambiguous as f64 / denom_edit;
+    let v3_edit_base_mismatch_rate = v3_err_edit_base_mismatch as f64 / denom_edit;
+    let v3_edit_apply_failed_rate = v3_err_edit_apply_failed as f64 / denom_edit;
+    let v3_patch_share_in_v3 = v3_patch_apply_count as f64 / denom_v3;
+    let v3_edit_to_patch_ratio = v3_edit_apply_count as f64 / denom_patch;
+    let v3_fallback_to_v2_rate = v3_fallback_to_v2_count as f64 / denom_v3;
 
     let fallback_rate = if apply_count > 0 {
         fallback_count as f64 / apply_count as f64
@@ -456,17 +665,65 @@ pub fn aggregate_weekly(
             search_hit_rate,
             logs_hit_rate,
         },
+        online_search_count: if online_search_count > 0 {
+            Some(online_search_count)
+        } else {
+            None
+        },
+        online_search_cache_hit_rate: if online_search_count > 0 {
+            Some(online_search_cache_hits as f64 / online_search_count as f64)
+        } else {
+            None
+        },
+        online_early_stop_rate: if online_search_count > 0 {
+            Some(online_early_stops as f64 / online_search_count as f64)
+        } else {
+            None
+        },
+        avg_online_pages_ok: if online_search_count > 0 {
+            Some(online_pages_ok_sum as f64 / online_search_count as f64)
+        } else {
+            None
+        },
         previous: None,
         deltas: None,
+        v3_apply_count,
+        v3_edit_apply_count,
+        v3_patch_apply_count,
+        v3_edit_error_count,
+        v3_err_edit_anchor_not_found_count: v3_err_edit_anchor_not_found,
+        v3_err_edit_before_not_found_count: v3_err_edit_before_not_found,
+        v3_err_edit_ambiguous_count: v3_err_edit_ambiguous,
+        v3_err_edit_base_mismatch_count: v3_err_edit_base_mismatch,
+        v3_err_edit_apply_failed_count: v3_err_edit_apply_failed,
+        v3_edit_fail_rate,
+        v3_edit_anchor_not_found_rate,
+        v3_edit_before_not_found_rate,
+        v3_edit_ambiguous_rate,
+        v3_edit_base_mismatch_rate,
+        v3_edit_apply_failed_rate,
+        v3_edit_to_patch_ratio,
+        v3_patch_share_in_v3,
+        v3_fallback_to_v2_count,
+        v3_fallback_to_v2_rate,
     }
 }
 
-const WEEKLY_REPORT_SYSTEM_PROMPT: &str = r#"Ты анализируешь телеметрию работы AI-агента (протоколы v1/v2).
+const WEEKLY_REPORT_SYSTEM_PROMPT: &str = r#"Ты анализируешь телеметрию работы AI-агента (протоколы v1/v2/v3).
 Твоя задача: составить еженедельный отчёт для оператора с выводами и конкретными предложениями улучшений.
 Никаких патчей к проекту. Никаких actions. Только отчёт по схеме.
 Пиши кратко, по делу. Предлагай меры, которые оператор реально может сделать.
 
 ВАЖНО: Используй только предоставленные числа. Не выдумывай цифры. В evidence ссылайся на конкретные поля, например: fallback_rate_excluding_non_utf8_rate=0.012, fallback_by_reason.ERR_PATCH_APPLY_FAILED=3.
+
+Предлагай **только** то, что можно обосновать полями bundle + deltas. В proposals заполняй kind, title, why, risk, steps, expected_impact (и evidence при наличии).
+
+Типовые proposals:
+- prompt_change: если PATCH группа растёт или ERR_PATCH_APPLY_FAILED растёт — усиление patch-инструкций / увеличение контекста / чтение больше строк. Если v3_edit_ambiguous_rate или v3_edit_before_not_found_rate растёт — усилить prompt: «before должен включать 1–2 строки контекста», «before в пределах 50 строк от anchor».
+- setting_change (auto-use): если online_fallback_suggested часто и auto-use выключен — предложить включить; если auto-use включён и помогает — оставить.
+- golden_trace_add: если new_error_codes содержит код и count>=2 — предложить добавить golden trace.
+- limit_tuning: если context часто dropped — предложить повысить PAPAYU_ONLINE_CONTEXT_MAX_CHARS и т.п.
+- safety_rule: расширить protected paths при необходимости.
 
 Рекомендуемые направления:
 - Снизить ERR_PATCH_APPLY_FAILED: увеличить контекст hunks/прочитать больше строк вокруг
@@ -492,13 +749,15 @@ pub async fn call_llm_report(
         serde_json::from_str(include_str!("../../config/llm_weekly_report_schema.json"))
             .map_err(|e| format!("schema parse: {}", e))?;
 
-    let stats_json = serde_json::to_string_pretty(stats).map_err(|e| format!("serialize stats: {}", e))?;
+    let stats_json =
+        serde_json::to_string_pretty(stats).map_err(|e| format!("serialize stats: {}", e))?;
     let samples: Vec<serde_json::Value> = traces
         .iter()
         .take(5)
         .map(|(_, t)| trace_to_sample(t))
         .collect();
-    let samples_json = serde_json::to_string_pretty(&samples).map_err(|e| format!("serialize samples: {}", e))?;
+    let samples_json =
+        serde_json::to_string_pretty(&samples).map_err(|e| format!("serialize samples: {}", e))?;
 
     let user_content = format!(
         "Агрегированная телеметрия за период {} — {}:\n\n```json\n{}\n```\n\nПримеры трасс (без raw_content):\n\n```json\n{}\n```",
@@ -553,7 +812,8 @@ pub async fn call_llm_report(
         return Err(format!("API error {}: {}", status, text));
     }
 
-    let chat: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Response JSON: {}", e))?;
+    let chat: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("Response JSON: {}", e))?;
     let content = chat
         .get("choices")
         .and_then(|c| c.as_array())
@@ -563,7 +823,8 @@ pub async fn call_llm_report(
         .and_then(|c| c.as_str())
         .ok_or_else(|| "No content in API response".to_string())?;
 
-    let report: serde_json::Value = serde_json::from_str(content).map_err(|e| format!("Report JSON: {}", e))?;
+    let report: serde_json::Value =
+        serde_json::from_str(content).map_err(|e| format!("Report JSON: {}", e))?;
 
     let compiled = JSONSchema::options()
         .with_draft(jsonschema::Draft::Draft7)
@@ -590,12 +851,47 @@ pub fn build_self_contained_md(stats: &WeeklyStatsBundle, llm_md: &str) -> Strin
     md.push_str(&format!("| apply_count | {} |\n", stats.apply_count));
     md.push_str(&format!("| fallback_count | {} |\n", stats.fallback_count));
     md.push_str(&format!("| fallback_rate | {:.4} |\n", stats.fallback_rate));
-    md.push_str(&format!("| fallback_excluding_non_utf8_rate | {:.4} |\n", stats.fallback_excluding_non_utf8_rate));
-    md.push_str(&format!("| repair_attempt_rate | {:.4} |\n", stats.repair_attempt_rate));
-    md.push_str(&format!("| repair_success_rate | {:.4} |\n", stats.repair_success_rate));
-    md.push_str(&format!("| repair_to_fallback_rate | {:.4} |\n", stats.repair_to_fallback_rate));
-    md.push_str(&format!("| sha_injection_rate | {:.4} |\n", stats.sha_injection_rate));
+    md.push_str(&format!(
+        "| fallback_excluding_non_utf8_rate | {:.4} |\n",
+        stats.fallback_excluding_non_utf8_rate
+    ));
+    md.push_str(&format!(
+        "| repair_attempt_rate | {:.4} |\n",
+        stats.repair_attempt_rate
+    ));
+    md.push_str(&format!(
+        "| repair_success_rate | {:.4} |\n",
+        stats.repair_success_rate
+    ));
+    md.push_str(&format!(
+        "| repair_to_fallback_rate | {:.4} |\n",
+        stats.repair_to_fallback_rate
+    ));
+    md.push_str(&format!(
+        "| sha_injection_rate | {:.4} |\n",
+        stats.sha_injection_rate
+    ));
     md.push_str("\n");
+
+    if stats.v3_apply_count > 0 {
+        md.push_str("### v3 EDIT_FILE\n\n");
+        md.push_str(&format!(
+            "- v3_apply_count={}, v3_edit_apply_count={}, v3_patch_apply_count={}\n",
+            stats.v3_apply_count, stats.v3_edit_apply_count, stats.v3_patch_apply_count
+        ));
+        md.push_str(&format!(
+            "- v3_edit_fail_rate={:.3}, ambiguous={:.3}, before_not_found={:.3}, anchor_not_found={:.3}\n",
+            stats.v3_edit_fail_rate,
+            stats.v3_edit_ambiguous_rate,
+            stats.v3_edit_before_not_found_rate,
+            stats.v3_edit_anchor_not_found_rate
+        ));
+        md.push_str(&format!(
+            "- v3_fallback_to_v2_rate={:.3}, patch_share_in_v3={:.3}, edit_to_patch_ratio={:.2}\n",
+            stats.v3_fallback_to_v2_rate, stats.v3_patch_share_in_v3, stats.v3_edit_to_patch_ratio
+        ));
+        md.push_str("\n");
+    }
 
     if !stats.fallback_by_reason.is_empty() {
         md.push_str("## Top fallback reasons\n\n");
@@ -625,10 +921,22 @@ pub fn build_self_contained_md(stats: &WeeklyStatsBundle, llm_md: &str) -> Strin
 
     if let Some(ref deltas) = stats.deltas {
         md.push_str("## Дельты vs предыдущая неделя\n\n");
-        md.push_str(&format!("| delta_apply_count | {} |\n", deltas.delta_apply_count));
-        md.push_str(&format!("| delta_fallback_rate | {:+.4} |\n", deltas.delta_fallback_rate));
-        md.push_str(&format!("| delta_repair_attempt_rate | {:+.4} |\n", deltas.delta_repair_attempt_rate));
-        md.push_str(&format!("| delta_repair_success_rate | {:+.4} |\n", deltas.delta_repair_success_rate));
+        md.push_str(&format!(
+            "| delta_apply_count | {} |\n",
+            deltas.delta_apply_count
+        ));
+        md.push_str(&format!(
+            "| delta_fallback_rate | {:+.4} |\n",
+            deltas.delta_fallback_rate
+        ));
+        md.push_str(&format!(
+            "| delta_repair_attempt_rate | {:+.4} |\n",
+            deltas.delta_repair_attempt_rate
+        ));
+        md.push_str(&format!(
+            "| delta_repair_success_rate | {:+.4} |\n",
+            deltas.delta_repair_success_rate
+        ));
         md.push_str("\n");
     }
 
@@ -639,13 +947,28 @@ pub fn build_self_contained_md(stats: &WeeklyStatsBundle, llm_md: &str) -> Strin
 
 /// Формирует Markdown отчёт из LLM ответа.
 pub fn report_to_md(report: &serde_json::Value) -> String {
-    let title = report.get("title").and_then(|v| v.as_str()).unwrap_or("Weekly Report");
+    let title = report
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Weekly Report");
     let period = report.get("period");
-    let from = period.and_then(|p| p.get("from")).and_then(|v| v.as_str()).unwrap_or("?");
-    let to = period.and_then(|p| p.get("to")).and_then(|v| v.as_str()).unwrap_or("?");
-    let summary = report.get("summary_md").and_then(|v| v.as_str()).unwrap_or("");
+    let from = period
+        .and_then(|p| p.get("from"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let to = period
+        .and_then(|p| p.get("to"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let summary = report
+        .get("summary_md")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
-    let mut md = format!("# {}\n\nПериод: {} — {}\n\n{}\n\n", title, from, to, summary);
+    let mut md = format!(
+        "# {}\n\nПериод: {} — {}\n\n{}\n\n",
+        title, from, to, summary
+    );
 
     if let Some(kpis) = report.get("kpis") {
         md.push_str("## KPI\n\n");
@@ -678,7 +1001,15 @@ pub fn report_to_md(report: &serde_json::Value) -> String {
             let pri = r.get("priority").and_then(|v| v.as_str()).unwrap_or("p2");
             let title_r = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let rat = r.get("rationale").and_then(|v| v.as_str()).unwrap_or("");
-            md.push_str(&format!("- [{}] **{}**: {} — {}\n", pri, title_r, rat, r.get("expected_impact").and_then(|v| v.as_str()).unwrap_or("")));
+            md.push_str(&format!(
+                "- [{}] **{}**: {} — {}\n",
+                pri,
+                title_r,
+                rat,
+                r.get("expected_impact")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+            ));
         }
         md.push_str("\n");
     }
@@ -689,7 +1020,10 @@ pub fn report_to_md(report: &serde_json::Value) -> String {
             let title_a = a.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let empty: Vec<serde_json::Value> = vec![];
             let steps = a.get("steps").and_then(|v| v.as_array()).unwrap_or(&empty);
-            let est = a.get("time_estimate_minutes").and_then(|v| v.as_i64()).unwrap_or(0);
+            let est = a
+                .get("time_estimate_minutes")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             md.push_str(&format!("### {}\n\nОценка: {} мин\n\n", title_a, est));
             for (i, s) in steps.iter().enumerate() {
                 if let Some(st) = s.as_str() {
@@ -698,6 +1032,32 @@ pub fn report_to_md(report: &serde_json::Value) -> String {
             }
             md.push_str("\n");
         }
+    }
+
+    if let Some(proposals) = report.get("proposals").and_then(|v| v.as_array()) {
+        md.push_str("## Предложения (proposals)\n\n");
+        for p in proposals {
+            let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let title_p = p.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let why = p.get("why").and_then(|v| v.as_str()).unwrap_or("");
+            let risk = p.get("risk").and_then(|v| v.as_str()).unwrap_or("");
+            let impact = p
+                .get("expected_impact")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            md.push_str(&format!(
+                "- **{}** [{}] risk={}: {} — {}\n",
+                kind, title_p, risk, why, impact
+            ));
+            let empty: Vec<serde_json::Value> = vec![];
+            let steps = p.get("steps").and_then(|v| v.as_array()).unwrap_or(&empty);
+            for (i, s) in steps.iter().enumerate() {
+                if let Some(st) = s.as_str() {
+                    md.push_str(&format!("  {}. {}\n", i + 1, st));
+                }
+            }
+        }
+        md.push_str("\n");
     }
 
     md
@@ -709,7 +1069,9 @@ pub async fn analyze_weekly_reports(
     from: Option<String>,
     to: Option<String>,
 ) -> WeeklyReportResult {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0));
     let now_secs = now.as_secs();
     let week_secs: u64 = 7 * 24 * 3600;
     let (to_secs, from_secs) = if let (Some(f), Some(t)) = (&from, &to) {
@@ -743,7 +1105,8 @@ pub async fn analyze_weekly_reports(
 
     let mut stats = aggregate_weekly(&traces, &from_str, &to_str);
 
-    let prev_traces = collect_traces(project_path, prev_from_secs, prev_to_secs).unwrap_or_default();
+    let prev_traces =
+        collect_traces(project_path, prev_from_secs, prev_to_secs).unwrap_or_default();
     if !prev_traces.is_empty() {
         let prev_stats = aggregate_weekly(&prev_traces, &prev_from_str, &prev_to_str);
         stats.previous = Some(PreviousPeriodStats {
@@ -762,10 +1125,12 @@ pub async fn analyze_weekly_reports(
             delta_apply_count: stats.apply_count as i64 - prev_stats.apply_count as i64,
             delta_fallback_count: stats.fallback_count as i64 - prev_stats.fallback_count as i64,
             delta_fallback_rate: stats.fallback_rate - prev_stats.fallback_rate,
-            delta_fallback_excluding_non_utf8_rate: stats.fallback_excluding_non_utf8_rate - prev_stats.fallback_excluding_non_utf8_rate,
+            delta_fallback_excluding_non_utf8_rate: stats.fallback_excluding_non_utf8_rate
+                - prev_stats.fallback_excluding_non_utf8_rate,
             delta_repair_attempt_rate: stats.repair_attempt_rate - prev_stats.repair_attempt_rate,
             delta_repair_success_rate: stats.repair_success_rate - prev_stats.repair_success_rate,
-            delta_repair_to_fallback_rate: stats.repair_to_fallback_rate - prev_stats.repair_to_fallback_rate,
+            delta_repair_to_fallback_rate: stats.repair_to_fallback_rate
+                - prev_stats.repair_to_fallback_rate,
             delta_sha_injection_rate: stats.sha_injection_rate - prev_stats.sha_injection_rate,
         });
     }
@@ -776,7 +1141,12 @@ pub async fn analyze_weekly_reports(
         .top_error_codes
         .iter()
         .map(|(k, v)| (k.as_str(), *v))
-        .chain(stats.fallback_by_reason.iter().map(|(k, v)| (k.as_str(), *v)))
+        .chain(
+            stats
+                .fallback_by_reason
+                .iter()
+                .map(|(k, v)| (k.as_str(), *v)),
+        )
     {
         if let Some(base) = extract_base_error_code(code) {
             if !golden.contains(&base) {
@@ -898,7 +1268,47 @@ mod tests {
         assert!((stats.repair_attempt_rate - 0.5).abs() < 0.001); // 1 repair attempt / 2 applies
         assert!((stats.repair_success_rate - 0.0).abs() < 0.001); // 0/1 repair attempts succeeded
         assert!((stats.repair_to_fallback_rate - 1.0).abs() < 0.001); // 1/1 went to fallback
-        assert_eq!(stats.fallback_by_reason.get("ERR_PATCH_APPLY_FAILED"), Some(&1));
+        assert_eq!(
+            stats.fallback_by_reason.get("ERR_PATCH_APPLY_FAILED"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn test_aggregate_weekly_v3_edit_metrics() {
+        let traces = vec![
+            (
+                1704067200,
+                serde_json::json!({
+                    "event": "LLM_PLAN_OK",
+                    "schema_version": 3,
+                    "validated_json": {
+                        "actions": [
+                            { "kind": "EDIT_FILE", "path": "src/main.rs", "base_sha256": "abc123", "edits": [] }
+                        ],
+                        "summary": "Fix"
+                    },
+                    "context_stats": {},
+                    "cache_stats": { "hit_rate": 0.5, "env_hits": 0, "env_misses": 1, "read_hits": 1, "read_misses": 0, "search_hits": 0, "search_misses": 0, "logs_hits": 0, "logs_misses": 0 }
+                }),
+            ),
+            (
+                1704153600,
+                serde_json::json!({
+                    "event": "VALIDATION_FAILED",
+                    "schema_version": 3,
+                    "error_code": "ERR_EDIT_AMBIGUOUS",
+                    "validated_json": { "actions": [] }
+                }),
+            ),
+        ];
+        let stats = aggregate_weekly(&traces, "2024-01-01", "2024-01-07");
+        assert_eq!(stats.v3_apply_count, 1);
+        assert_eq!(stats.v3_edit_apply_count, 1);
+        assert_eq!(stats.v3_edit_error_count, 1);
+        assert_eq!(stats.v3_err_edit_ambiguous_count, 1);
+        assert!((stats.v3_edit_fail_rate - 1.0).abs() < 0.001); // 1 error / 1 edit apply
+        assert!((stats.v3_edit_ambiguous_rate - 1.0).abs() < 0.001);
     }
 
     #[test]
@@ -909,7 +1319,12 @@ mod tests {
         assert_eq!(group_error_code("ERR_BASE_MISMATCH"), "PATCH");
         assert_eq!(group_error_code("ERR_NON_UTF8_FILE"), "ENCODING");
         assert_eq!(group_error_code("ERR_INVALID_PATH"), "SAFETY");
-        assert_eq!(group_error_code("ERR_V2_UPDATE_EXISTING_FORBIDDEN"), "V2_UPDATE");
+        assert_eq!(
+            group_error_code("ERR_V2_UPDATE_EXISTING_FORBIDDEN"),
+            "V2_UPDATE"
+        );
+        assert_eq!(group_error_code("ERR_EDIT_ANCHOR_NOT_FOUND"), "EDIT");
+        assert_eq!(group_error_code("ERR_EDIT_AMBIGUOUS"), "EDIT");
     }
 
     #[test]
@@ -922,25 +1337,126 @@ mod tests {
             fallback_rate: 0.1,
             fallback_by_reason: [("ERR_PATCH_APPLY_FAILED".into(), 1)].into_iter().collect(),
             fallback_by_group: [("PATCH".into(), 1)].into_iter().collect(),
-        fallback_excluding_non_utf8_rate: 0.1,
-        repair_attempt_rate: 0.2,
-        repair_success_rate: 0.9,
-        repair_to_fallback_rate: 0.1,
+            fallback_excluding_non_utf8_rate: 0.1,
+            repair_attempt_rate: 0.2,
+            repair_success_rate: 0.9,
+            repair_to_fallback_rate: 0.1,
             sha_injection_rate: 0.05,
             top_sha_injected_paths: vec![],
             top_error_codes: vec![],
             error_codes_by_group: [("PATCH".into(), 1)].into_iter().collect(),
             new_error_codes: vec![("ERR_XYZ".into(), 2)],
-            context: ContextAgg { avg_total_chars: 0.0, p95_total_chars: 0, avg_files_count: 0.0, avg_dropped_files: 0.0 },
-            cache: CacheAgg { avg_hit_rate: 0.0, env_hit_rate: 0.0, read_hit_rate: 0.0, search_hit_rate: 0.0, logs_hit_rate: 0.0 },
+            context: ContextAgg {
+                avg_total_chars: 0.0,
+                p95_total_chars: 0,
+                avg_files_count: 0.0,
+                avg_dropped_files: 0.0,
+            },
+            cache: CacheAgg {
+                avg_hit_rate: 0.0,
+                env_hit_rate: 0.0,
+                read_hit_rate: 0.0,
+                search_hit_rate: 0.0,
+                logs_hit_rate: 0.0,
+            },
+            online_search_count: None,
+            online_search_cache_hit_rate: None,
+            online_early_stop_rate: None,
+            avg_online_pages_ok: None,
             previous: None,
             deltas: None,
+            v3_apply_count: 0,
+            v3_edit_apply_count: 0,
+            v3_patch_apply_count: 0,
+            v3_edit_error_count: 0,
+            v3_err_edit_anchor_not_found_count: 0,
+            v3_err_edit_before_not_found_count: 0,
+            v3_err_edit_ambiguous_count: 0,
+            v3_err_edit_base_mismatch_count: 0,
+            v3_err_edit_apply_failed_count: 0,
+            v3_edit_fail_rate: 0.0,
+            v3_edit_anchor_not_found_rate: 0.0,
+            v3_edit_before_not_found_rate: 0.0,
+            v3_edit_ambiguous_rate: 0.0,
+            v3_edit_base_mismatch_rate: 0.0,
+            v3_edit_apply_failed_rate: 0.0,
+            v3_edit_to_patch_ratio: 0.0,
+            v3_patch_share_in_v3: 0.0,
+            v3_fallback_to_v2_count: 0,
+            v3_fallback_to_v2_rate: 0.0,
         };
         let md = build_self_contained_md(&stats, "## LLM Summary\n\nText.");
         assert!(md.contains("apply_count"));
         assert!(md.contains("ERR_PATCH_APPLY_FAILED"));
         assert!(md.contains("ERR_XYZ"));
         assert!(md.contains("LLM Summary"));
+        // v3 section not shown when v3_apply_count=0
+        assert!(!md.contains("v3_apply_count"));
+    }
+
+    #[test]
+    fn test_build_self_contained_md_v3_section() {
+        let stats = WeeklyStatsBundle {
+            period_from: "2024-01-01".into(),
+            period_to: "2024-01-07".into(),
+            apply_count: 5,
+            fallback_count: 0,
+            fallback_rate: 0.0,
+            fallback_by_reason: BTreeMap::new(),
+            fallback_by_group: BTreeMap::new(),
+            fallback_excluding_non_utf8_rate: 0.0,
+            repair_attempt_rate: 0.0,
+            repair_success_rate: 0.0,
+            repair_to_fallback_rate: 0.0,
+            sha_injection_rate: 0.0,
+            top_sha_injected_paths: vec![],
+            top_error_codes: vec![],
+            error_codes_by_group: BTreeMap::new(),
+            new_error_codes: vec![],
+            context: ContextAgg {
+                avg_total_chars: 0.0,
+                p95_total_chars: 0,
+                avg_files_count: 0.0,
+                avg_dropped_files: 0.0,
+            },
+            cache: CacheAgg {
+                avg_hit_rate: 0.0,
+                env_hit_rate: 0.0,
+                read_hit_rate: 0.0,
+                search_hit_rate: 0.0,
+                logs_hit_rate: 0.0,
+            },
+            online_search_count: None,
+            online_search_cache_hit_rate: None,
+            online_early_stop_rate: None,
+            avg_online_pages_ok: None,
+            previous: None,
+            deltas: None,
+            v3_apply_count: 3,
+            v3_edit_apply_count: 2,
+            v3_patch_apply_count: 1,
+            v3_edit_error_count: 1,
+            v3_err_edit_anchor_not_found_count: 0,
+            v3_err_edit_before_not_found_count: 0,
+            v3_err_edit_ambiguous_count: 1,
+            v3_err_edit_base_mismatch_count: 0,
+            v3_err_edit_apply_failed_count: 0,
+            v3_edit_fail_rate: 0.5,
+            v3_edit_anchor_not_found_rate: 0.0,
+            v3_edit_before_not_found_rate: 0.0,
+            v3_edit_ambiguous_rate: 0.5,
+            v3_edit_base_mismatch_rate: 0.0,
+            v3_edit_apply_failed_rate: 0.0,
+            v3_edit_to_patch_ratio: 2.0,
+            v3_patch_share_in_v3: 0.333,
+            v3_fallback_to_v2_count: 0,
+            v3_fallback_to_v2_rate: 0.0,
+        };
+        let md = build_self_contained_md(&stats, "");
+        assert!(md.contains("v3_apply_count=3"));
+        assert!(md.contains("v3_edit_apply_count=2"));
+        assert!(md.contains("v3_edit_fail_rate=0.500"));
+        assert!(md.contains("edit_to_patch_ratio=2.00"));
     }
 
     #[test]

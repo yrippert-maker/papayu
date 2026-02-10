@@ -34,7 +34,11 @@ pub fn maybe_online_fallback(
 pub fn extract_error_code_prefix(msg: &str) -> &str {
     if let Some(colon) = msg.find(':') {
         let prefix = msg[..colon].trim();
-        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if !prefix.is_empty()
+            && prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
             return prefix;
         }
     }
@@ -43,7 +47,10 @@ pub fn extract_error_code_prefix(msg: &str) -> &str {
 
 /// Проверяет наличие NEEDS_ONLINE_RESEARCH или ONLINE: в summary/context_requests.
 #[allow(dead_code)]
-pub fn extract_needs_online_from_plan(summary: Option<&str>, context_requests_json: Option<&str>) -> Option<String> {
+pub fn extract_needs_online_from_plan(
+    summary: Option<&str>,
+    context_requests_json: Option<&str>,
+) -> Option<String> {
     if let Some(s) = summary {
         if let Some(q) = extract_online_query_from_text(s) {
             return Some(q);
@@ -56,7 +63,11 @@ pub fn extract_needs_online_from_plan(summary: Option<&str>, context_requests_js
                     let ty = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     let query = obj.get("query").and_then(|v| v.as_str()).unwrap_or("");
                     if ty == "search" && query.starts_with("ONLINE:") {
-                        let q = query.strip_prefix("ONLINE:").map(|s| s.trim()).unwrap_or(query).to_string();
+                        let q = query
+                            .strip_prefix("ONLINE:")
+                            .map(|s| s.trim())
+                            .unwrap_or(query)
+                            .to_string();
                         if !q.is_empty() {
                             return Some(q);
                         }
@@ -123,7 +134,10 @@ mod tests {
     #[test]
     fn test_extract_needs_online() {
         assert_eq!(
-            extract_needs_online_from_plan(Some("NEEDS_ONLINE_RESEARCH: latest React version"), None),
+            extract_needs_online_from_plan(
+                Some("NEEDS_ONLINE_RESEARCH: latest React version"),
+                None
+            ),
             Some("latest React version".to_string())
         );
     }

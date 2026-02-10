@@ -6,15 +6,28 @@ use std::path::Path;
 
 /// Расширения текстовых файлов для включения в контекст ИИ
 const TEXT_EXT: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "json", "toml", "md", "yml", "yaml",
-    "css", "scss", "html", "xml", "vue", "svelte", "go", "rb", "java", "kt", "swift", "c", "h",
-    "cpp", "hpp", "sh", "bash", "zsh", "sql", "graphql",
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "json", "toml", "md", "yml", "yaml", "css",
+    "scss", "html", "xml", "vue", "svelte", "go", "rb", "java", "kt", "swift", "c", "h", "cpp",
+    "hpp", "sh", "bash", "zsh", "sql", "graphql",
 ];
 
 /// Папки, которые не сканируем
 const EXCLUDE_DIRS: &[&str] = &[
-    "node_modules", "target", "dist", "build", ".git", ".next", ".nuxt", ".cache",
-    "coverage", "__pycache__", ".venv", "venv", ".idea", ".vscode", "vendor",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".git",
+    ".next",
+    ".nuxt",
+    ".cache",
+    "coverage",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".idea",
+    ".vscode",
+    "vendor",
 ];
 
 /// Макс. символов на файл (чтобы не перегружать контекст)
@@ -56,7 +69,11 @@ pub fn get_project_content_for_llm(root: &Path, max_total_chars: Option<usize>) 
                             let rel = path.strip_prefix(root).unwrap_or(&path);
                             let rel_str = rel.display().to_string();
                             let truncated = if content.len() > MAX_BYTES_PER_FILE {
-                                format!("{}…\n(обрезано, всего {} байт)", &content[..MAX_BYTES_PER_FILE], content.len())
+                                format!(
+                                    "{}…\n(обрезано, всего {} байт)",
+                                    &content[..MAX_BYTES_PER_FILE],
+                                    content.len()
+                                )
                             } else {
                                 content
                             };
@@ -76,7 +93,10 @@ pub fn get_project_content_for_llm(root: &Path, max_total_chars: Option<usize>) 
     if out.is_empty() {
         out = "В папке нет релевантных исходных файлов. Можно создать проект с нуля.".to_string();
     } else {
-        out.insert_str(0, "Содержимое файлов проекта (полный контекст для анализа):\n");
+        out.insert_str(
+            0,
+            "Содержимое файлов проекта (полный контекст для анализа):\n",
+        );
     }
     out
 }
@@ -127,7 +147,11 @@ fn collect_dir(
                         let rel = path.strip_prefix(root).unwrap_or(&path);
                         let rel_str = rel.display().to_string();
                         let truncated = if content.len() > MAX_BYTES_PER_FILE {
-                            format!("{}…\n(обрезано, всего {} байт)", &content[..MAX_BYTES_PER_FILE], content.len())
+                            format!(
+                                "{}…\n(обрезано, всего {} байт)",
+                                &content[..MAX_BYTES_PER_FILE],
+                                content.len()
+                            )
                         } else {
                             content
                         };

@@ -48,7 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(p) => p.to_string(),
         None => {
             let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
-            let name = trace.get("trace_id").and_then(|v| v.as_str()).unwrap_or("out");
+            let name = trace
+                .get("trace_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("out");
             format!(
                 "{}/../docs/golden_traces/v1/{}_golden.json",
                 manifest_dir, name
@@ -61,16 +64,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn trace_to_golden_format(trace: &serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+fn trace_to_golden_format(
+    trace: &serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let schema_version = trace
         .get("schema_version")
-        .or_else(|| trace.get("config_snapshot").and_then(|c| c.get("schema_version")))
+        .or_else(|| {
+            trace
+                .get("config_snapshot")
+                .and_then(|c| c.get("schema_version"))
+        })
         .cloned()
         .unwrap_or(serde_json::json!(1));
     let version = schema_version.as_u64().unwrap_or(1) as u32;
     let schema_hash_val = trace
         .get("schema_hash")
-        .or_else(|| trace.get("config_snapshot").and_then(|c| c.get("schema_hash")))
+        .or_else(|| {
+            trace
+                .get("config_snapshot")
+                .and_then(|c| c.get("schema_hash"))
+        })
         .cloned()
         .unwrap_or_else(|| serde_json::Value::String(schema_hash_for_version(version)));
 
@@ -89,12 +102,16 @@ fn trace_to_golden_format(trace: &serde_json::Value) -> Result<serde_json::Value
         .map(|s| !s.is_empty() && matches!(s.to_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false);
 
-    let validation_outcome = if trace.get("event").and_then(|v| v.as_str()) == Some("VALIDATION_FAILED") {
-        "err"
-    } else {
-        "ok"
-    };
-    let error_code = trace.get("error").and_then(|v| v.as_str()).map(String::from);
+    let validation_outcome =
+        if trace.get("event").and_then(|v| v.as_str()) == Some("VALIDATION_FAILED") {
+            "err"
+        } else {
+            "ok"
+        };
+    let error_code = trace
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let golden = serde_json::json!({
         "protocol": {

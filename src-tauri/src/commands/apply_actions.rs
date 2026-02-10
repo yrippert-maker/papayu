@@ -3,8 +3,8 @@ use tauri::AppHandle;
 
 use crate::commands::auto_check::auto_check;
 use crate::tx::{
-    apply_one_action, clear_redo, collect_rel_paths, ensure_history, new_tx_id,
-    preflight_actions, push_undo, rollback_tx, snapshot_before, sort_actions_for_apply, write_manifest,
+    apply_one_action, clear_redo, collect_rel_paths, ensure_history, new_tx_id, preflight_actions,
+    push_undo, rollback_tx, snapshot_before, sort_actions_for_apply, write_manifest,
 };
 use crate::types::{ApplyPayload, ApplyResult, TxManifest};
 
@@ -149,7 +149,7 @@ pub fn apply_actions(app: AppHandle, payload: ApplyPayload) -> ApplyResult {
     }
 
     if payload.auto_check.unwrap_or(false) {
-        if let Err(_) = auto_check(&root) {
+        if auto_check(&root).is_err() {
             let _ = rollback_tx(&app, &tx_id);
             return ApplyResult {
                 ok: false,
@@ -179,26 +179,48 @@ pub fn apply_actions(app: AppHandle, payload: ApplyPayload) -> ApplyResult {
 
 fn is_protected_file(p: &str) -> bool {
     let lower = p.to_lowercase().replace('\\', "/");
-    if lower == ".env" || lower.ends_with("/.env") { return true; }
-    if lower.ends_with(".pem") || lower.ends_with(".key") || lower.ends_with(".p12") { return true; }
-    if lower.contains("id_rsa") { return true; }
-    if lower.contains("/secrets/") || lower.starts_with("secrets/") { return true; }
-    if lower.ends_with("cargo.lock") { return true; }
-    if lower.ends_with("package-lock.json") { return true; }
-    if lower.ends_with("pnpm-lock.yaml") { return true; }
-    if lower.ends_with("yarn.lock") { return true; }
-    if lower.ends_with("composer.lock") { return true; }
-    if lower.ends_with("poetry.lock") { return true; }
-    if lower.ends_with("pipfile.lock") { return true; }
+    if lower == ".env" || lower.ends_with("/.env") {
+        return true;
+    }
+    if lower.ends_with(".pem") || lower.ends_with(".key") || lower.ends_with(".p12") {
+        return true;
+    }
+    if lower.contains("id_rsa") {
+        return true;
+    }
+    if lower.contains("/secrets/") || lower.starts_with("secrets/") {
+        return true;
+    }
+    if lower.ends_with("cargo.lock") {
+        return true;
+    }
+    if lower.ends_with("package-lock.json") {
+        return true;
+    }
+    if lower.ends_with("pnpm-lock.yaml") {
+        return true;
+    }
+    if lower.ends_with("yarn.lock") {
+        return true;
+    }
+    if lower.ends_with("composer.lock") {
+        return true;
+    }
+    if lower.ends_with("poetry.lock") {
+        return true;
+    }
+    if lower.ends_with("pipfile.lock") {
+        return true;
+    }
     let bin_ext = [
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-        ".pdf", ".zip", ".7z", ".rar", ".dmg", ".pkg",
-        ".exe", ".dll", ".so", ".dylib", ".bin",
-        ".mp3", ".mp4", ".mov", ".avi",
-        ".wasm", ".class",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".zip", ".7z", ".rar", ".dmg",
+        ".pkg", ".exe", ".dll", ".so", ".dylib", ".bin", ".mp3", ".mp4", ".mov", ".avi", ".wasm",
+        ".class",
     ];
     for ext in bin_ext {
-        if lower.ends_with(ext) { return true; }
+        if lower.ends_with(ext) {
+            return true;
+        }
     }
     false
 }
@@ -206,9 +228,31 @@ fn is_protected_file(p: &str) -> bool {
 fn is_text_allowed(p: &str) -> bool {
     let lower = p.to_lowercase();
     let ok_ext = [
-        ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".toml", ".yaml", ".yml",
-        ".rs", ".py", ".go", ".java", ".kt", ".c", ".cpp", ".h", ".hpp",
-        ".css", ".scss", ".html", ".env", ".gitignore", ".editorconfig",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".json",
+        ".md",
+        ".txt",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".rs",
+        ".py",
+        ".go",
+        ".java",
+        ".kt",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".css",
+        ".scss",
+        ".html",
+        ".env",
+        ".gitignore",
+        ".editorconfig",
     ];
     ok_ext.iter().any(|e| lower.ends_with(e)) || !lower.contains('.')
 }

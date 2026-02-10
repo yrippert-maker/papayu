@@ -1,7 +1,9 @@
 use std::path::Path;
 
+use crate::agent_sync;
 use crate::commands::get_project_profile::get_project_limits;
 use crate::commands::{analyze_project, apply_actions, preview_actions};
+use crate::snyk_sync;
 use crate::tx::get_undo_redo_state;
 use crate::types::{BatchEvent, BatchPayload};
 use tauri::AppHandle;
@@ -15,7 +17,14 @@ pub async fn run_batch(app: AppHandle, payload: BatchPayload) -> Result<Vec<Batc
         payload.paths.clone()
     };
 
-    let report = analyze_project(paths.clone(), payload.attached_files.clone()).map_err(|e| e.to_string())?;
+    let report = analyze_project(paths.clone(), payload.attached_files.clone())
+        .map_err(|e| e.to_string())?;
+    let snyk_findings = if snyk_sync::is_snyk_sync_enabled() {
+        snyk_sync::fetch_snyk_code_issues().await.ok()
+    } else {
+        None
+    };
+    agent_sync::write_agent_sync_if_enabled(&report, snyk_findings);
     events.push(BatchEvent {
         kind: "report".to_string(),
         report: Some(report.clone()),
@@ -25,9 +34,7 @@ pub async fn run_batch(app: AppHandle, payload: BatchPayload) -> Result<Vec<Batc
         undo_available: None,
     });
 
-    let actions = payload
-        .selected_actions
-        .unwrap_or(report.actions.clone());
+    let actions = payload.selected_actions.unwrap_or(report.actions.clone());
     if actions.is_empty() {
         return Ok(events);
     }

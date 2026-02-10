@@ -18,15 +18,19 @@ import {
   verifyProject,
   getTrendsRecommendations,
   fetchTrendsRecommendations,
+  researchDesignTrends,
   exportSettings,
   importSettings,
   analyzeWeeklyReports,
   saveReport,
   researchAnswer,
+  applyProjectSetting,
+  distillAndSaveDomainNote,
 } from "@/lib/tauri";
 import { AgenticResult } from "@/pages/tasks/AgenticResult";
 import { useUndoRedo } from "@/pages/tasks/useUndoRedo";
 import { useTheme } from "@/lib/useTheme";
+import { ProjectNotesPanel, WeeklyReportProposalsPanel } from "@/components";
 import type {
   Action,
   ActionGroup,
@@ -42,6 +46,7 @@ import type {
   TrendsRecommendation,
   TrendsResult,
   VerifyResult,
+  WeeklyProposal,
 } from "@/lib/types";
 
 const STORAGE_LINKS = "papa_yu_folder_links";
@@ -90,6 +95,10 @@ export default function Tasks() {
   const [designStyle, setDesignStyle] = useState("");
   const [trends, setTrends] = useState<TrendsResult | null>(null);
   const [trendsLoading, setTrendsLoading] = useState(false);
+  const [designTrends, setDesignTrends] = useState<TrendsResult | null>(null);
+  const [designTrendsLoading, setDesignTrendsLoading] = useState(false);
+  const [trendsTab, setTrendsTab] = useState<"code" | "design">("code");
+  const [designQuery, setDesignQuery] = useState("");
   const [applyProgressVisible, setApplyProgressVisible] = useState(false);
   const [applyProgressLog, setApplyProgressLog] = useState<string[]>([]);
   const [applyResult, setApplyResult] = useState<ApplyTxResult | null>(null);
@@ -97,14 +106,17 @@ export default function Tasks() {
   const [requestHistory, setRequestHistory] = useState<{ id: string; title: string; messages: ChatMessage[]; lastPath: string | null; lastReport: AnalyzeReport | null }[]>([]);
   const [trendsModalOpen, setTrendsModalOpen] = useState(false);
   const [weeklyReportModalOpen, setWeeklyReportModalOpen] = useState(false);
-  const [weeklyReport, setWeeklyReport] = useState<{ reportMd: string; projectPath: string } | null>(null);
+  const [weeklyReport, setWeeklyReport] = useState<{ reportMd: string; projectPath: string; proposals?: WeeklyProposal[] } | null>(null);
   const [weeklyReportLoading, setWeeklyReportLoading] = useState(false);
+  const [leftPanelTab, setLeftPanelTab] = useState<"weekly" | "notes">("weekly");
+  const [reportModalTab, setReportModalTab] = useState<"report" | "proposals">("report");
   const [selectedRecommendation, setSelectedRecommendation] = useState<TrendsRecommendation | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [lastPlanJson, setLastPlanJson] = useState<string | null>(null);
   const [lastPlanContext, setLastPlanContext] = useState<string | null>(null);
   const lastGoalWithOnlineFallbackRef = useRef<string | null>(null);
-  const [lastOnlineAnswer, setLastOnlineAnswer] = useState<{ answer_md: string; sources: OnlineSource[]; confidence: number } | null>(null);
+  const [lastOnlineAnswer, setLastOnlineAnswer] = useState<{ query: string; answer_md: string; sources: OnlineSource[]; confidence: number } | null>(null);
+  const [distillNoteBusy, setDistillNoteBusy] = useState(false);
   const [onlineContextPending, setOnlineContextPending] = useState<{ md: string; sources: string[] } | null>(null);
   const [onlineAutoUseAsContext, setOnlineAutoUseAsContext] = useState<boolean>(() => {
     try {
@@ -835,12 +847,16 @@ export default function Tasks() {
   const getSelectedPendingActions = (): Action[] =>
     (pendingActions ?? []).filter((_, i) => pendingActionIdx[i] !== false);
 
-  /** Собрать контекст трендов для ИИ: ИИ использует его самостоятельно при предложениях. */
+  /** Собрать контекст трендов для ИИ: тренды кода + дизайн/иконки (если загружены). ИИ использует для передовых дизайнерских решений. */
   const getTrendsContextForAI = (): string | undefined => {
-    if (!trends?.recommendations?.length) return undefined;
-    return trends.recommendations
-      .map((r) => `• ${r.title}${r.summary ? `: ${r.summary}` : ""}`)
-      .join("\n");
+    const codePart = trends?.recommendations?.length
+      ? trends.recommendations.map((r) => `• ${r.title}${r.summary ? `: ${r.summary}` : ""}`).join("\n")
+      : "";
+    const designPart = designTrends?.recommendations?.length
+      ? "\n[Дизайн и иконки — безопасные источники]\n" + designTrends.recommendations.map((r) => `• ${r.title}${r.summary ? `: ${r.summary}` : ""}${r.url ? ` ${r.url}` : ""}`).join("\n")
+      : "";
+    const combined = [codePart, designPart].filter(Boolean).join("\n");
+    return combined || undefined;
   };
 
   /** v3.0: предложить исправления (агент) → план по цели. ИИ в первую очередь выполняет команду пользователя. path и reportJson можно передать явно (при вводе команды без предварительного анализа). */
@@ -894,8 +910,8 @@ export default function Tasks() {
             setMessages((m) => [...m, { role: "assistant", text: plan.error ?? "Ошибка формирования плана" }]);
             setMessages((m) => [...m, { role: "system", text: "Онлайн-поиск (auto)…" }]);
             try {
-              const online = await researchAnswer(plan.online_fallback_suggested);
-              setLastOnlineAnswer({ answer_md: online.answer_md, sources: online.sources ?? [], confidence: online.confidence });
+              const online = await researchAnswer(plan.online_fallback_suggested, lastPath || folderLinks[0] || undefined);
+              setLastOnlineAnswer({ query: plan.online_fallback_suggested ?? "", answer_md: online.answer_md, sources: online.sources ?? [], confidence: online.confidence });
               const sourcesLine = online.sources?.length
                 ? "\n\nИсточники:\n" + online.sources.slice(0, 5).map((s) => `• ${s.title}: ${s.url}`).join("\n")
                 : "";
@@ -950,8 +966,8 @@ export default function Tasks() {
             setMessages((m) => [...m, { role: "assistant", text: plan.error ?? "Ошибка формирования плана" }]);
             setMessages((m) => [...m, { role: "system", text: "Попытка онлайн-поиска…" }]);
             try {
-              const online = await researchAnswer(plan.online_fallback_suggested);
-              setLastOnlineAnswer({ answer_md: online.answer_md, sources: online.sources ?? [], confidence: online.confidence });
+              const online = await researchAnswer(plan.online_fallback_suggested, lastPath || folderLinks[0] || undefined);
+              setLastOnlineAnswer({ query: plan.online_fallback_suggested ?? "", answer_md: online.answer_md, sources: online.sources ?? [], confidence: online.confidence });
               const sourcesLine = online.sources?.length
                 ? "\n\nИсточники:\n" + online.sources.slice(0, 5).map((s) => `• ${s.title}: ${s.url}`).join("\n")
                 : "";
@@ -1019,6 +1035,22 @@ export default function Tasks() {
       setTrends(null);
     } finally {
       setTrendsLoading(false);
+    }
+  };
+
+  /** Найти тренды дизайна и иконок из безопасных источников (Tavily + allowlist). */
+  const handleFetchDesignTrends = async () => {
+    setDesignTrendsLoading(true);
+    try {
+      const res = await researchDesignTrends(
+        designQuery.trim() || null,
+        10
+      );
+      setDesignTrends(res);
+    } catch (_) {
+      setDesignTrends(null);
+    } finally {
+      setDesignTrendsLoading(false);
     }
   };
 
@@ -1155,49 +1187,95 @@ export default function Tasks() {
           <img src="/send-icon.png" alt="" style={{ height: "20px", width: "auto", objectFit: "contain" }} />
           Тренды и рекомендации
         </button>
-        <button
-          type="button"
-          onClick={async () => {
-            const path = lastPath || folderLinks[0];
-            if (!path) {
-              setMessages((m) => [...m, { role: "system", text: "Выберите проект для Weekly Report." }]);
-              return;
-            }
-            setWeeklyReportModalOpen(true);
-            setWeeklyReportLoading(true);
-            setWeeklyReport(null);
-            try {
-              const res = await analyzeWeeklyReports(path);
-              if (res.ok && res.report_md) {
-                setWeeklyReport({ reportMd: res.report_md, projectPath: path });
-              } else {
-                setWeeklyReport({ reportMd: res.error || "Ошибка генерации отчёта.", projectPath: path });
+        <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+          <button
+            type="button"
+            onClick={() => setLeftPanelTab("weekly")}
+            style={{
+              flex: 1,
+              padding: "6px 8px",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid var(--color-border)",
+              background: leftPanelTab === "weekly" ? "#059669" : "var(--color-surface)",
+              color: leftPanelTab === "weekly" ? "#fff" : "var(--color-text)",
+              fontWeight: 600,
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            Weekly Report
+          </button>
+          <button
+            type="button"
+            onClick={() => setLeftPanelTab("notes")}
+            style={{
+              flex: 1,
+              padding: "6px 8px",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid var(--color-border)",
+              background: leftPanelTab === "notes" ? "#059669" : "var(--color-surface)",
+              color: leftPanelTab === "notes" ? "#fff" : "var(--color-text)",
+              fontWeight: 600,
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            Project Notes
+          </button>
+        </div>
+        {leftPanelTab === "weekly" && (
+          <button
+            type="button"
+            onClick={async () => {
+              const path = lastPath || folderLinks[0];
+              if (!path) {
+                setMessages((m) => [...m, { role: "system", text: "Выберите проект для Weekly Report." }]);
+                return;
               }
-            } catch (e) {
-              setWeeklyReport({ reportMd: String(e), projectPath: path });
-            } finally {
-              setWeeklyReportLoading(false);
-            }
-          }}
-          style={{
-            padding: "10px 14px",
-            background: "#059669",
-            color: "#fff",
-            border: "none",
-            borderRadius: "var(--radius-md)",
-            cursor: "pointer",
-            fontWeight: 600,
-            fontSize: "13px",
-            boxShadow: "0 2px 6px rgba(5, 150, 105, 0.3)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "8px",
-          }}
-          title="Еженедельный отчёт по телеметрии"
-        >
-          Weekly Report
-        </button>
+              setWeeklyReportModalOpen(true);
+              setReportModalTab("report");
+              setWeeklyReportLoading(true);
+              setWeeklyReport(null);
+              try {
+                const res = await analyzeWeeklyReports(path);
+                const proposals = (res.llm_report as { proposals?: WeeklyProposal[] } | undefined)?.proposals ?? [];
+                if (res.ok && res.report_md) {
+                  setWeeklyReport({ reportMd: res.report_md, projectPath: path, proposals });
+                } else {
+                  setWeeklyReport({ reportMd: res.error || "Ошибка генерации отчёта.", projectPath: path, proposals: [] });
+                }
+              } catch (e) {
+                setWeeklyReport({ reportMd: String(e), projectPath: path, proposals: [] });
+              } finally {
+                setWeeklyReportLoading(false);
+              }
+            }}
+            style={{
+              padding: "10px 14px",
+              background: "#059669",
+              color: "#fff",
+              border: "none",
+              borderRadius: "var(--radius-md)",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: "13px",
+              boxShadow: "0 2px 6px rgba(5, 150, 105, 0.3)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "8px",
+              width: "100%",
+            }}
+            title="Еженедельный отчёт по телеметрии"
+          >
+            Сформировать отчёт
+          </button>
+        )}
+        {leftPanelTab === "notes" && (
+          <div style={{ flex: 1, minHeight: 280, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+            <ProjectNotesPanel projectPath={lastPath || folderLinks[0] || ""} />
+          </div>
+        )}
         {displayRequests.length > 0 && (
           <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-muted)", marginBottom: "4px", marginTop: "8px" }}>
             Запросы
@@ -1684,6 +1762,34 @@ export default function Tasks() {
               >
                 Copy answer
               </button>
+              {(lastPath || folderLinks[0]) && lastOnlineAnswer.query && (
+                <button
+                  type="button"
+                  disabled={distillNoteBusy}
+                  onClick={async () => {
+                    const projectPath = lastPath || folderLinks[0];
+                    if (!projectPath || !lastOnlineAnswer) return;
+                    setDistillNoteBusy(true);
+                    try {
+                      await distillAndSaveDomainNote(
+                        projectPath,
+                        lastOnlineAnswer.query,
+                        lastOnlineAnswer.answer_md,
+                        lastOnlineAnswer.sources.map((s) => ({ url: s.url, title: s.title })),
+                        lastOnlineAnswer.confidence
+                      );
+                      setMessages((m) => [...m, { role: "system", text: "Заметка сохранена в Project Notes." }]);
+                    } catch (e) {
+                      setMessages((m) => [...m, { role: "system", text: `Ошибка сохранения заметки: ${String(e)}` }]);
+                    } finally {
+                      setDistillNoteBusy(false);
+                    }
+                  }}
+                  style={{ padding: "6px 12px", fontSize: "13px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: distillNoteBusy ? "not-allowed" : "pointer", fontWeight: 500 }}
+                >
+                  {distillNoteBusy ? "Сохранение…" : "Save as Project Note"}
+                </button>
+              )}
               {onlineAutoUseAsContext && (
                 <button
                   type="button"
@@ -2270,7 +2376,7 @@ export default function Tasks() {
               background: "#fff",
               borderRadius: "var(--radius-xl)",
               boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
-              maxWidth: 520,
+              maxWidth: 560,
               width: "90%",
               maxHeight: "85vh",
               display: "flex",
@@ -2283,6 +2389,10 @@ export default function Tasks() {
               Тренды и рекомендации
               <button type="button" onClick={() => (setTrendsModalOpen(false), setSelectedRecommendation(null))} style={{ padding: "6px 12px", background: "#e2e8f0", border: "none", borderRadius: "8px", fontWeight: 600 }}>Закрыть</button>
             </div>
+            <div style={{ display: "flex", borderBottom: "1px solid var(--color-border)" }}>
+              <button type="button" onClick={() => (setTrendsTab("code"), setSelectedRecommendation(null))} style={{ flex: 1, padding: "12px", border: "none", background: trendsTab === "code" ? "#eff6ff" : "transparent", fontWeight: 600, color: trendsTab === "code" ? "#1e40af" : "#64748b", cursor: "pointer" }}>Тренды кода</button>
+              <button type="button" onClick={() => (setTrendsTab("design"), setSelectedRecommendation(null))} style={{ flex: 1, padding: "12px", border: "none", background: trendsTab === "design" ? "#f0fdf4" : "transparent", fontWeight: 600, color: trendsTab === "design" ? "#166534" : "#64748b", cursor: "pointer" }}>Дизайн и иконки</button>
+            </div>
             <div style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
               {selectedRecommendation ? (
                 <div style={{ marginBottom: "16px" }}>
@@ -2294,6 +2404,29 @@ export default function Tasks() {
                     <a href={selectedRecommendation.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "14px", color: "#2563eb", marginTop: "8px", display: "inline-block" }}>Подробнее</a>
                   )}
                 </div>
+              ) : trendsTab === "design" ? (
+                <>
+                  <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginBottom: "10px" }}>Поиск трендовых дизайнов, иконок и UI-решений только из безопасных источников (Dribbble, Figma, Material, Heroicons и др.).</p>
+                  <div style={{ display: "flex", gap: "8px", marginBottom: "12px", flexWrap: "wrap" }}>
+                    <input type="text" value={designQuery} onChange={(e) => setDesignQuery(e.target.value)} placeholder="Например: modern dashboard UI 2024" style={{ flex: 1, minWidth: 160, padding: "8px 12px", border: "1px solid var(--color-border)", borderRadius: "var(--radius-md)" }} />
+                    <button type="button" onClick={handleFetchDesignTrends} disabled={designTrendsLoading} style={{ padding: "8px 16px", background: "#166534", color: "#fff", border: "none", borderRadius: "var(--radius-md)", fontWeight: 600 }}>
+                      {designTrendsLoading ? "Поиск…" : "Найти тренды дизайна"}
+                    </button>
+                  </div>
+                  {designTrends && designTrends.recommendations.length > 0 && (
+                    <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                      {designTrends.recommendations.map((r, i) => (
+                        <li key={i}>
+                          <button type="button" onClick={() => setSelectedRecommendation(r)} style={{ display: "block", width: "100%", padding: "12px 14px", marginBottom: "8px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "var(--radius-md)", textAlign: "left", cursor: "pointer", fontSize: "14px", fontWeight: 600, color: "#166534" }}>
+                            {r.title}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {(!designTrends || designTrends.recommendations.length === 0) && !designTrendsLoading && <p style={{ color: "var(--color-text-muted)" }}>Введите запрос и нажмите «Найти тренды дизайна». Нужен PAPAYU_TAVILY_API_KEY.</p>}
+                  {designTrendsLoading && <p style={{ color: "var(--color-text-muted)" }}>Загрузка…</p>}
+                </>
               ) : (
                 <>
                   {trends && (
@@ -2373,28 +2506,80 @@ export default function Tasks() {
               Weekly Report
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                 {weeklyReport && !weeklyReportLoading && !weeklyReport.reportMd.startsWith("Ошибка") && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!weeklyReport) return;
-                      try {
-                        const path = await saveReport(weeklyReport.projectPath, weeklyReport.reportMd);
-                        setMessages((m) => [...m, { role: "system", text: `Отчёт сохранён: ${path}` }]);
-                      } catch (e) {
-                        setMessages((m) => [...m, { role: "system", text: `Ошибка сохранения: ${String(e)}` }]);
-                      }
-                    }}
-                    style={{ padding: "6px 12px", background: "#059669", color: "#fff", border: "none", borderRadius: "8px", fontWeight: 600, cursor: "pointer" }}
-                  >
-                    Сохранить отчёт
-                  </button>
+                  <>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button
+                        type="button"
+                        onClick={() => setReportModalTab("report")}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid var(--color-border)",
+                          background: reportModalTab === "report" ? "#059669" : "var(--color-surface)",
+                          color: reportModalTab === "report" ? "#fff" : "var(--color-text)",
+                          fontWeight: 600,
+                          fontSize: 12,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Report
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReportModalTab("proposals")}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid var(--color-border)",
+                          background: reportModalTab === "proposals" ? "#059669" : "var(--color-surface)",
+                          color: reportModalTab === "proposals" ? "#fff" : "var(--color-text)",
+                          fontWeight: 600,
+                          fontSize: 12,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Proposals
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!weeklyReport) return;
+                        try {
+                          const path = await saveReport(weeklyReport.projectPath, weeklyReport.reportMd);
+                          setMessages((m) => [...m, { role: "system", text: `Отчёт сохранён: ${path}` }]);
+                        } catch (e) {
+                          setMessages((m) => [...m, { role: "system", text: `Ошибка сохранения: ${String(e)}` }]);
+                        }
+                      }}
+                      style={{ padding: "6px 12px", background: "#059669", color: "#fff", border: "none", borderRadius: "8px", fontWeight: 600, cursor: "pointer" }}
+                    >
+                      Сохранить отчёт
+                    </button>
+                  </>
                 )}
                 <button type="button" onClick={() => setWeeklyReportModalOpen(false)} style={{ padding: "6px 12px", background: "#e2e8f0", border: "none", borderRadius: "8px", fontWeight: 600 }}>Закрыть</button>
               </div>
             </div>
-            <div style={{ padding: "16px 20px", overflowY: "auto", flex: 1, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono, monospace)", fontSize: "13px", lineHeight: 1.6 }}>
+            <div style={{ padding: "16px 20px", overflowY: "auto", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
               {weeklyReportLoading && <p style={{ color: "var(--color-text-muted)" }}>Собираю трассы и генерирую отчёт…</p>}
-              {weeklyReport && !weeklyReportLoading && <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{weeklyReport.reportMd}</pre>}
+              {weeklyReport && !weeklyReportLoading && reportModalTab === "report" && (
+                <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "var(--font-mono, monospace)", fontSize: "13px", lineHeight: 1.6 }}>{weeklyReport.reportMd}</pre>
+              )}
+              {weeklyReport && !weeklyReportLoading && reportModalTab === "proposals" && (
+                <WeeklyReportProposalsPanel
+                  projectPath={weeklyReport.projectPath}
+                  proposals={weeklyReport.proposals ?? []}
+                  onApply={async (key, value) => {
+                    try {
+                      await applyProjectSetting(weeklyReport.projectPath, key, value);
+                      setMessages((m) => [...m, { role: "system", text: `Настройка применена: ${key} = ${String(value)}` }]);
+                    } catch (e) {
+                      throw e;
+                    }
+                  }}
+                />
+              )}
               {!weeklyReport && !weeklyReportLoading && <p style={{ color: "var(--color-text-muted)" }}>Нет данных.</p>}
             </div>
           </div>

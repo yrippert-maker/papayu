@@ -5,10 +5,13 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, Window};
 
-use crate::commands::{analyze_project, apply_actions_tx, generate_actions_from_report, get_project_profile, preview_actions, undo_last_tx};
+use crate::commands::{
+    analyze_project, apply_actions_tx, generate_actions_from_report, get_project_profile,
+    preview_actions, undo_last_tx,
+};
 use crate::types::{
-    Action, ActionKind, AgenticRunRequest, AgenticRunResult, AttemptResult,
-    ApplyOptions, ApplyPayload, VerifyResult,
+    Action, ActionKind, AgenticRunRequest, AgenticRunResult, ApplyOptions, ApplyPayload,
+    AttemptResult, VerifyResult,
 };
 use crate::verify::verify_project;
 
@@ -55,11 +58,7 @@ fn has_editorconfig(root: &Path) -> bool {
 }
 
 /// v2.4.0: эвристический план (без LLM). README, .gitignore, tests/README.md, .editorconfig.
-fn build_plan(
-    path: &str,
-    _goal: &str,
-    max_actions: u16,
-) -> (String, Vec<Action>) {
+fn build_plan(path: &str, _goal: &str, max_actions: u16) -> (String, Vec<Action>) {
     let root = Path::new(path);
     let mut actions: Vec<Action> = vec![];
     let mut plan_parts: Vec<String> = vec![];
@@ -73,6 +72,7 @@ fn build_plan(
             ),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         plan_parts.push("README.md".into());
     }
@@ -86,6 +86,7 @@ fn build_plan(
             ),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         plan_parts.push(".gitignore".into());
     }
@@ -97,6 +98,7 @@ fn build_plan(
             content: Some("# Тесты\n\nДобавьте unit- и интеграционные тесты.\n".into()),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         plan_parts.push("tests/README.md".into());
     }
@@ -106,10 +108,12 @@ fn build_plan(
             kind: ActionKind::CreateFile,
             path: ".editorconfig".to_string(),
             content: Some(
-                "root = true\n\n[*]\nindent_style = space\nindent_size = 2\nend_of_line = lf\n".into(),
+                "root = true\n\n[*]\nindent_style = space\nindent_size = 2\nend_of_line = lf\n"
+                    .into(),
             ),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         plan_parts.push(".editorconfig".into());
     }
@@ -186,10 +190,7 @@ pub async fn agentic_run(window: Window, payload: AgenticRunRequest) -> AgenticR
             if a.len() > n {
                 a.truncate(n);
             }
-            (
-                format!("План из отчёта: {} действий.", a.len()),
-                a,
-            )
+            (format!("План из отчёта: {} действий.", a.len()), a)
         } else {
             build_plan(&path, &goal, max_actions)
         };
@@ -241,7 +242,12 @@ pub async fn agentic_run(window: Window, payload: AgenticRunRequest) -> AgenticR
         .await;
 
         if !apply_result.ok {
-            emit_progress(&window, "failed", "Не удалось безопасно применить изменения.", attempt_u8);
+            emit_progress(
+                &window,
+                "failed",
+                "Не удалось безопасно применить изменения.",
+                attempt_u8,
+            );
             let err = apply_result.error.clone();
             let code = apply_result.error_code.clone();
             attempts.push(AttemptResult {
@@ -270,7 +276,12 @@ pub async fn agentic_run(window: Window, payload: AgenticRunRequest) -> AgenticR
             emit_progress(&window, "verify", "Проверяю сборку/типы…", attempt_u8);
             let v = verify_project(&path);
             if !v.ok {
-                emit_progress(&window, "revert", "Обнаружены ошибки. Откатываю изменения…", attempt_u8);
+                emit_progress(
+                    &window,
+                    "revert",
+                    "Обнаружены ошибки. Откатываю изменения…",
+                    attempt_u8,
+                );
                 let _ = undo_last_tx(app.clone(), path.clone()).await;
                 attempts.push(AttemptResult {
                     attempt: attempt_u8,
@@ -311,7 +322,12 @@ pub async fn agentic_run(window: Window, payload: AgenticRunRequest) -> AgenticR
         };
     }
 
-    emit_progress(&window, "failed", "Не удалось безопасно применить изменения.", max_attempts.min(255) as u8);
+    emit_progress(
+        &window,
+        "failed",
+        "Не удалось безопасно применить изменения.",
+        max_attempts.min(255) as u8,
+    );
     AgenticRunResult {
         ok: false,
         attempts,

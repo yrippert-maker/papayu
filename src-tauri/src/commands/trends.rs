@@ -2,7 +2,6 @@
 //! Данные хранятся в app_data_dir/trends.json; при первом запуске или если прошло >= 30 дней — should_update = true.
 
 use std::fs;
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Manager};
@@ -16,13 +15,18 @@ fn default_recommendations() -> Vec<TrendsRecommendation> {
     vec![
         TrendsRecommendation {
             title: "TypeScript и строгая типизация".to_string(),
-            summary: Some("Использование TypeScript в веб- и Node-проектах снижает количество ошибок.".to_string()),
+            summary: Some(
+                "Использование TypeScript в веб- и Node-проектах снижает количество ошибок."
+                    .to_string(),
+            ),
             url: Some("https://www.typescriptlang.org/".to_string()),
             source: Some("PAPA YU".to_string()),
         },
         TrendsRecommendation {
             title: "React Server Components и Next.js".to_string(),
-            summary: Some("Тренд на серверный рендеринг и стриминг в React-экосистеме.".to_string()),
+            summary: Some(
+                "Тренд на серверный рендеринг и стриминг в React-экосистеме.".to_string(),
+            ),
             url: Some("https://nextjs.org/".to_string()),
             source: Some("PAPA YU".to_string()),
         },
@@ -34,7 +38,10 @@ fn default_recommendations() -> Vec<TrendsRecommendation> {
         },
         TrendsRecommendation {
             title: "Обновляйте зависимости и линтеры".to_string(),
-            summary: Some("Регулярно обновляйте npm/cargo зависимости и настройте линтеры (ESLint, Clippy).".to_string()),
+            summary: Some(
+                "Регулярно обновляйте npm/cargo зависимости и настройте линтеры (ESLint, Clippy)."
+                    .to_string(),
+            ),
             url: None,
             source: Some("PAPA YU".to_string()),
         },
@@ -93,7 +100,8 @@ pub fn get_trends_recommendations(app: AppHandle) -> TrendsResult {
             };
         }
     };
-    let should_update = parse_and_check_older_than_days(&stored.last_updated, RECOMMEND_UPDATE_DAYS);
+    let should_update =
+        parse_and_check_older_than_days(&stored.last_updated, RECOMMEND_UPDATE_DAYS);
     TrendsResult {
         last_updated: stored.last_updated,
         recommendations: stored.recommendations,
@@ -114,7 +122,11 @@ fn parse_and_check_older_than_days(iso: &str, days: i64) -> bool {
 }
 
 /// Разрешённые URL для запроса трендов (только эти домены).
-const ALLOWED_TRENDS_HOSTS: &[&str] = &["raw.githubusercontent.com", "api.github.com", "jsonplaceholder.typicode.com"];
+const ALLOWED_TRENDS_HOSTS: &[&str] = &[
+    "raw.githubusercontent.com",
+    "api.github.com",
+    "jsonplaceholder.typicode.com",
+];
 
 fn url_allowed(url: &str) -> bool {
     let url = url.trim().to_lowercase();
@@ -123,7 +135,9 @@ fn url_allowed(url: &str) -> bool {
     }
     let rest = url.strip_prefix("https://").unwrap_or("");
     let host = rest.split('/').next().unwrap_or("");
-    ALLOWED_TRENDS_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{}", h)))
+    ALLOWED_TRENDS_HOSTS
+        .iter()
+        .any(|h| host == *h || host.ends_with(&format!(".{}", h)))
 }
 
 /// Обновляет тренды: запрашивает данные по allowlist URL (PAPAYU_TRENDS_URL или встроенный список) и сохраняет.
@@ -134,33 +148,45 @@ pub async fn fetch_trends_recommendations(app: AppHandle) -> TrendsResult {
 
     let urls: Vec<String> = std::env::var("PAPAYU_TRENDS_URLS")
         .ok()
-        .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
         .unwrap_or_else(Vec::new);
 
     let mut recommendations = Vec::new();
+    const MAX_TRENDS_RESPONSE_BYTES: usize = 1_000_000;
+    const TRENDS_FETCH_TIMEOUT_SEC: u64 = 15;
     if !urls.is_empty() {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
         for url in urls {
             if !url_allowed(&url) {
                 continue;
             }
-            if let Ok(resp) = client.get(&url).send().await {
-                if let Ok(text) = resp.text().await {
-                    if let Ok(parsed) = serde_json::from_str::<Vec<TrendsRecommendation>>(&text) {
+            match crate::net::fetch_url_safe(
+                &url,
+                MAX_TRENDS_RESPONSE_BYTES,
+                TRENDS_FETCH_TIMEOUT_SEC,
+            )
+            .await
+            {
+                Ok(body) => {
+                    if let Ok(parsed) = serde_json::from_str::<Vec<TrendsRecommendation>>(&body) {
                         recommendations.extend(parsed);
-                    } else if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&text) {
+                    } else if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&body) {
                         if let Some(arr) = obj.get("recommendations").and_then(|a| a.as_array()) {
                             for v in arr {
-                                if let Ok(r) = serde_json::from_value::<TrendsRecommendation>(v.clone()) {
+                                if let Ok(r) =
+                                    serde_json::from_value::<TrendsRecommendation>(v.clone())
+                                {
                                     recommendations.push(r);
                                 }
                             }
                         }
                     }
                 }
+                Err(_) => {}
             }
         }
     }
@@ -173,7 +199,10 @@ pub async fn fetch_trends_recommendations(app: AppHandle) -> TrendsResult {
         recommendations: recommendations.clone(),
     };
     if let Ok(path) = app_trends_path(&app) {
-        let _ = fs::write(path, serde_json::to_string_pretty(&stored).unwrap_or_default());
+        let _ = fs::write(
+            path,
+            serde_json::to_string_pretty(&stored).unwrap_or_default(),
+        );
     }
 
     TrendsResult {

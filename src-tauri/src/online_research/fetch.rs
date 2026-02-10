@@ -51,13 +51,22 @@ fn is_url_allowed(u: &Url) -> bool {
     true
 }
 
+/// Max URL length (security: avoid extremely long URLs).
+const MAX_URL_LEN: usize = 2048;
+
 /// Скачивает URL с ограничениями по размеру и таймауту. SSRF-safe.
 pub async fn fetch_url_safe(
     url_str: &str,
     max_bytes: usize,
     timeout_sec: u64,
 ) -> Result<String, String> {
+    if url_str.len() > MAX_URL_LEN {
+        return Err(format!("URL too long: {} > {}", url_str.len(), MAX_URL_LEN));
+    }
     let url = Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("URL with credential (user:pass@) not allowed".into());
+    }
     if !is_url_allowed(&url) {
         return Err("URL not allowed (SSRF protection)".into());
     }
@@ -101,7 +110,11 @@ pub async fn fetch_url_safe(
 
     let bytes = resp.bytes().await.map_err(|e| format!("Body: {}", e))?;
     if bytes.len() > max_bytes {
-        return Err(format!("Response too large: {} > {}", bytes.len(), max_bytes));
+        return Err(format!(
+            "Response too large: {} > {}",
+            bytes.len(),
+            max_bytes
+        ));
     }
 
     let text = String::from_utf8_lossy(&bytes);

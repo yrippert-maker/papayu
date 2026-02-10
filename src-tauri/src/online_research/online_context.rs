@@ -44,7 +44,12 @@ pub struct OnlineBlockResult {
 
 /// Собирает блок ONLINE_RESEARCH_SUMMARY + ONLINE_SOURCES для вставки в prompt.
 /// sources — список URL (обрезается по max_sources).
-pub fn build_online_context_block(md: &str, sources: &[String], max_chars: usize, max_sources: usize) -> OnlineBlockResult {
+pub fn build_online_context_block(
+    md: &str,
+    sources: &[String],
+    max_chars: usize,
+    max_sources: usize,
+) -> OnlineBlockResult {
     let truncated = truncate_online_context(md, max_chars);
     let was_truncated = md.chars().count() > max_chars;
 
@@ -58,7 +63,11 @@ pub fn build_online_context_block(md: &str, sources: &[String], max_chars: usize
         };
     }
 
-    let sources_trimmed: Vec<&str> = sources.iter().map(|s| s.as_str()).take(max_sources).collect();
+    let sources_trimmed: Vec<&str> = sources
+        .iter()
+        .map(|s| s.as_str())
+        .take(max_sources)
+        .collect();
     let mut block = String::new();
     block.push_str("\n\nONLINE_RESEARCH_SUMMARY:\n");
     block.push_str(&truncated);
@@ -88,7 +97,9 @@ pub fn effective_online_max_chars(
     max_total: usize,
     priority0_reserved: usize,
 ) -> usize {
-    let available = max_total.saturating_sub(rest_context_chars).saturating_sub(priority0_reserved);
+    let available = max_total
+        .saturating_sub(rest_context_chars)
+        .saturating_sub(priority0_reserved);
     if available < 512 {
         0
     } else {

@@ -32,7 +32,11 @@ fn has_license(root: &str) -> bool {
 fn extract_error_code(msg: &str) -> &str {
     if let Some(colon) = msg.find(':') {
         let prefix = msg[..colon].trim();
-        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if !prefix.is_empty()
+            && prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
             return prefix;
         }
     }
@@ -40,7 +44,16 @@ fn extract_error_code(msg: &str) -> &str {
 }
 
 const APPLY_TRIGGERS: &[&str] = &[
-    "ok", "ок", "apply", "применяй", "применить", "делай", "да", "yes", "go", "вперёд",
+    "ok",
+    "ок",
+    "apply",
+    "применяй",
+    "применить",
+    "делай",
+    "да",
+    "yes",
+    "go",
+    "вперёд",
 ];
 
 #[tauri::command]
@@ -90,13 +103,13 @@ pub async fn propose_actions(
                     summary: String::new(),
                     actions: vec![],
                     error: Some(format!("app data dir: {}", e)),
-                error_code: Some("APP_DATA_DIR".into()),
-                plan_json: None,
-                plan_context: None,
-                protocol_version_used: None,
-                online_fallback_suggested: None,
-                online_context_used: None,
-            };
+                    error_code: Some("APP_DATA_DIR".into()),
+                    plan_json: None,
+                    plan_context: None,
+                    protocol_version_used: None,
+                    online_fallback_suggested: None,
+                    online_context_used: None,
+                };
             }
         };
         let user_prefs_path = app_data.join("papa-yu").join("preferences.json");
@@ -118,9 +131,17 @@ pub async fn propose_actions(
             Some("apply")
         } else if APPLY_TRIGGERS.contains(&goal_lower.as_str()) && last_plan_json.is_some() {
             Some("apply")
-        } else if goal_lower.contains("исправь") || goal_lower.contains("почини") || goal_lower.contains("fix ") || goal_lower.contains("исправить") {
+        } else if goal_lower.contains("исправь")
+            || goal_lower.contains("почини")
+            || goal_lower.contains("fix ")
+            || goal_lower.contains("исправить")
+        {
             Some("plan")
-        } else if goal_lower.contains("создай") || goal_lower.contains("сгенерируй") || goal_lower.contains("create") || goal_lower.contains("с нуля") {
+        } else if goal_lower.contains("создай")
+            || goal_lower.contains("сгенерируй")
+            || goal_lower.contains("create")
+            || goal_lower.contains("с нуля")
+        {
             Some("apply")
         } else {
             None
@@ -129,14 +150,26 @@ pub async fn propose_actions(
         let last_plan_ref = last_plan_json.as_deref();
         let last_ctx_ref = last_context.as_deref();
         let apply_error = apply_error_code.as_deref().and_then(|code| {
-            apply_error_validated_json.as_deref().map(|json| (code, json))
+            apply_error_validated_json
+                .as_deref()
+                .map(|json| (code, json))
         });
         let force_protocol = {
             let code = apply_error_code.as_deref().unwrap_or("");
             let repair_attempt = apply_repair_attempt.unwrap_or(0);
-            if llm_planner::is_protocol_fallback_applicable(code, repair_attempt) {
+            if llm_planner::is_protocol_fallback_v3_to_v2_applicable(code, repair_attempt) {
                 let stage = apply_error_stage.as_deref().unwrap_or("apply");
-                eprintln!("[trace] PROTOCOL_FALLBACK from=v2 to=v1 reason={} stage={}", code, stage);
+                eprintln!(
+                    "[trace] PROTOCOL_FALLBACK from=v3 to=v2 reason={} stage={}",
+                    code, stage
+                );
+                Some(2u32)
+            } else if llm_planner::is_protocol_fallback_applicable(code, repair_attempt) {
+                let stage = apply_error_stage.as_deref().unwrap_or("apply");
+                eprintln!(
+                    "[trace] PROTOCOL_FALLBACK from=v2 to=v1 reason={} stage={}",
+                    code, stage
+                );
                 Some(1u32)
             } else {
                 None
@@ -179,14 +212,22 @@ pub async fn propose_actions(
                 )
                 .then_some(goal_trim.to_string());
                 if online_suggested.is_some() {
-                    eprintln!("[trace] ONLINE_FALLBACK_SUGGESTED error_code={} query_len={}", error_code_str, goal_trim.len());
+                    eprintln!(
+                        "[trace] ONLINE_FALLBACK_SUGGESTED error_code={} query_len={}",
+                        error_code_str,
+                        goal_trim.len()
+                    );
                 }
                 AgentPlan {
                     ok: false,
                     summary: String::new(),
                     actions: vec![],
                     error: Some(e),
-                    error_code: Some(if error_code_str.is_empty() { "LLM_ERROR".into() } else { error_code_str }),
+                    error_code: Some(if error_code_str.is_empty() {
+                        "LLM_ERROR".into()
+                    } else {
+                        error_code_str
+                    }),
                     plan_json: None,
                     plan_context: None,
                     protocol_version_used: None,
@@ -245,6 +286,7 @@ pub async fn propose_actions(
             )),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         summary.push("Добавлю README.md".into());
     }
@@ -254,10 +296,12 @@ pub async fn propose_actions(
             kind: ActionKind::CreateFile,
             path: ".gitignore".into(),
             content: Some(
-                "node_modules/\ndist/\nbuild/\n.DS_Store\n.env\n.env.*\ncoverage/\n.target/\n".into(),
+                "node_modules/\ndist/\nbuild/\n.DS_Store\n.env\n.env.*\ncoverage/\n.target/\n"
+                    .into(),
             ),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         summary.push("Добавлю .gitignore".into());
     }
@@ -279,6 +323,7 @@ pub async fn propose_actions(
                 ),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             });
             summary.push("Добавлю main.py (скелет)".into());
         }
@@ -291,6 +336,7 @@ pub async fn propose_actions(
             content: Some("UNLICENSED\n".into()),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         summary.push("Добавлю LICENSE (пометка UNLICENSED)".into());
     }
@@ -302,6 +348,7 @@ pub async fn propose_actions(
             content: Some("VITE_API_URL=\n# пример, без секретов\n".into()),
             patch: None,
             base_sha256: None,
+            edits: None,
         });
         summary.push("Добавлю .env.example (без секретов)".into());
     }
@@ -309,7 +356,8 @@ pub async fn propose_actions(
     if actions.is_empty() {
         return AgentPlan {
             ok: true,
-            summary: "Нет безопасных минимальных правок, которые можно применить автоматически.".into(),
+            summary: "Нет безопасных минимальных правок, которые можно применить автоматически."
+                .into(),
             actions,
             error: None,
             error_code: None,

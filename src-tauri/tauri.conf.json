@@ -1,6 +1,6 @@
 {
   "productName": "PAPA YU",
-  "version": "2.4.4",
+  "version": "2.4.5",
   "identifier": "com.papa-yu.app",
   "build": {
     "frontendDist": "../dist",
@@ -33,5 +33,9 @@
     "shortDescription": "PAPA YU",
     "longDescription": "PAPA YU — анализ проекта и автоматические исправления"
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/yrippert-maker/papayu/releases/latest/download/latest.json"]
+    }
+  }
 }

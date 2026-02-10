@@ -1,4 +1,4 @@
-# PAPA YU v2.4.4
+# PAPA YU v2.4.5
 
 Десктопное приложение для анализа проекта и автоматических исправлений (README, .gitignore, tests/, структура) с **транзакционным apply**, **реальным undo** и **autoCheck с откатом**.
 
@@ -32,6 +32,13 @@ npm run tauri dev
 npm run tauri build
 ```
 
+## v2.4.5 — что реализовано
+
+### Добавлено в v2.4.5
+
+- **Save as Project Note** — кнопка в блоке Online Research сохраняет результат в domain notes проекта (distill через LLM).
+- **Контекст v3** — при `PAPAYU_PROTOCOL_VERSION=3` FILE-блоки включают sha256 для base_sha256 в EDIT_FILE.
+
 ## v2.4.4 — что реализовано
 
 ### Анализ и профиль
@@ -50,6 +57,7 @@ npm run tauri build
 - **Защита путей** — запрещено изменение служебных путей (.git, node_modules, target, dist и т.д.) и бинарных файлов; разрешены только текстовые расширения (см. guard в коде).
 - **Подтверждение** — применение только при явном подтверждении пользователя (user_confirmed).
 - **Allowlist команд** — в verify и auto_check выполняются только разрешённые команды с фиксированными аргументами (конфиг в `src-tauri/config/verify_allowlist.json`).
+- **Терминал и интернет (личное использование)** — приложение может открывать ссылки в браузере (Chrome и др.) и выполнять ограниченный набор команд (git, npm, cargo и т.д.) через scope в capability `personal-automation`. Подробнее: **`docs/SECURITY_AND_PERSONAL_AUTOMATION.md`**.
 
 ### UX
 
@@ -91,6 +99,8 @@ npm run tauri dev
 
 После этого кнопка «Предложить исправления» будет строить план через выбранный LLM.
 
+**Claude и синхронизация с агентом (Claude Code / Cursor):** можно использовать Claude через [OpenRouter](https://openrouter.ai/) (OpenAI-совместимый API): `PAPAYU_LLM_API_URL=https://openrouter.ai/api/v1/chat/completions`, `PAPAYU_LLM_MODEL=anthropic/claude-3.5-sonnet`. При `PAPAYU_AGENT_SYNC=1` после каждого анализа в проекте записывается `.papa-yu/agent-sync.json` для чтения агентом в IDE. Подробнее: `docs/CLAUDE_AND_AGENT_SYNC.md`.
+
 Если `PAPAYU_LLM_API_URL` не задан или пуст, используется встроенная эвристика (README, .gitignore, LICENSE, .env.example по правилам).
 
 ### Online Research (опционально)
@@ -116,6 +126,26 @@ npm run tauri dev
 - Защита от циклов: максимум 1 auto-chain на один запрос (goal).
 - UI: при auto-use показывается метка "Auto-used ✓"; кнопка "Disable auto-use" отключает для текущего проекта (сохраняется в localStorage).
 
+**Тренды дизайна и иконок (вкладка в модалке «Тренды и рекомендации»):**
+- Поиск трендовых дизайнов сайтов/приложений и иконок **только из безопасных источников** (allowlist доменов: Dribbble, Behance, Figma, Material, Heroicons, Lucide, shadcn, NNGroup и др.).
+- Используется тот же **`PAPAYU_TAVILY_API_KEY`**; запросы идут с параметром `include_domains` — только разрешённые домены.
+- Результаты показываются в списке и **подмешиваются в контекст ИИ** при «Предложить исправления», чтобы агент мог предлагать передовые дизайнерские решения при создании программ.
+
+### Domain notes (A1–A3)
+
+Короткие «domain notes» на проект из online research: хранятся в `.papa-yu/notes/domain_notes.json`, при следующих запросах подмешиваются в prompt (с лимитами), чтобы реже ходить в Tavily и быстрее отвечать.
+
+- **Формат:** `schema_version`, `updated_at`, `notes[]` (id, topic, tags, content_md, sources, confidence, ttl_days, usage_count, last_used_at, pinned).
+- **Лимиты:** `PAPAYU_NOTES_MAX_ITEMS=50`, `PAPAYU_NOTES_MAX_CHARS_PER_NOTE=800`, `PAPAYU_NOTES_MAX_TOTAL_CHARS=4000`, `PAPAYU_NOTES_TTL_DAYS=30`.
+- **Дистилляция:** после online research можно сохранить заметку через LLM-сжатие (команда `distill_and_save_domain_note_cmd`).
+- **Injection:** в `llm_planner` перед ONLINE_RESEARCH и CONTEXT вставляется блок `PROJECT_DOMAIN_NOTES`; отбор заметок по релевантности к goal (token overlap); при использовании обновляются `usage_count` и `last_used_at`.
+- **Trace:** `notes_injected`, `notes_count`, `notes_chars`, `notes_ids`.
+- **Команды:** load/save/delete/clear_expired/pin domain notes, distill_and_save_domain_note. Подробнее: `docs/IMPLEMENTATION_STATUS_ABC.md`.
+
+### Weekly report proposals (B1–B2)
+
+В еженедельном отчёте LLM может возвращать массив **proposals** (prompt_change, setting_change, golden_trace_add, limit_tuning, safety_rule) с полями title, why, risk, steps, expected_impact, evidence. В prompt добавлено правило: предлагать только то, что обосновано bundle + deltas. Секция «Предложения (proposals)» выводится в report_md.
+
 ### Тестирование
 
 - **Юнит-тесты (Rust)** — тесты для `detect_project_type`, `get_project_limits`, `is_protected_file`, `is_text_allowed` (см. `src-tauri/src/commands/get_project_profile.rs` и `apply_actions_tx.rs`). Запуск: `cd src-tauri && cargo test`.
@@ -128,7 +158,15 @@ npm run tauri dev
 
 ## Документация
 
+- `docs/LIMITS.md` — границы продукта, Critical failures.
+- `docs/ARCHITECTURE.md` — обзор архитектуры, модули, границы.
+- `docs/RUNBOOK.md` — сборка, запуск, типовые проблемы.
+- `docs/adr/` — Architecture Decision Records (Tauri, EDIT_FILE v3, SSRF).
+- `docs/TECH_MEMO_FOR_INVESTORS.md` — технический memo для инвесторов.
+- `docs/BUYER_QA.md` — вопросы покупателя и ответы.
 - `docs/IMPROVEMENTS.md` — рекомендации по улучшениям.
 - `docs/E2E_SCENARIO.md` — E2E сценарий и критерии успеха.
-- `docs/ОЦЕНКА_И_СЦЕНАРИЙ_РАССКАЗА.md` — оценка необходимости обновлений и сценарий рассказа о программе по модулям.
+- `docs/EDIT_FILE_DEBUG.md` — чеклист отладки v3 EDIT_FILE.
+- `docs/INVESTMENT_READY_REPORT.md` — отчёт о готовности к передаче/продаже.
+- `docs/ПРЕЗЕНТАЦИЯ_PAPA_YU.md` — полномасштабная презентация программы (25 слайдов).
 - `CHANGELOG.md` — история изменений по версиям.

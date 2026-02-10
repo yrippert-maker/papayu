@@ -1,7 +1,9 @@
 //! v2.4.4: Export/import settings (projects, profiles, sessions, folder_links).
 
 use crate::commands::folder_links::{load_folder_links, save_folder_links, FolderLinks};
-use crate::store::{load_profiles, load_projects, load_sessions, save_profiles, save_projects, save_sessions};
+use crate::store::{
+    load_profiles, load_projects, load_sessions, save_profiles, save_projects, save_sessions,
+};
 use crate::types::{Project, ProjectSettings, Session};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -26,7 +28,7 @@ fn app_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 #[tauri::command]
 pub fn export_settings(app: tauri::AppHandle) -> Result<String, String> {
     let dir = app_data_dir(&app)?;
-    
+
     let bundle = SettingsBundle {
         version: "2.4.4".to_string(),
         exported_at: chrono::Utc::now().to_rfc3339(),
@@ -35,7 +37,7 @@ pub fn export_settings(app: tauri::AppHandle) -> Result<String, String> {
         sessions: load_sessions(&dir),
         folder_links: load_folder_links(&dir),
     };
-    
+
     serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())
 }
 
@@ -56,42 +58,42 @@ pub fn import_settings(
     json: String,
     mode: Option<String>,
 ) -> Result<ImportResult, String> {
-    let bundle: SettingsBundle = serde_json::from_str(&json)
-        .map_err(|e| format!("Invalid settings JSON: {}", e))?;
-    
+    let bundle: SettingsBundle =
+        serde_json::from_str(&json).map_err(|e| format!("Invalid settings JSON: {}", e))?;
+
     let mode = match mode.as_deref() {
         Some("replace") => ImportMode::Replace,
         _ => ImportMode::Merge,
     };
-    
+
     let dir = app_data_dir(&app)?;
-    
+
     let mut result = ImportResult {
         projects_imported: 0,
         profiles_imported: 0,
         sessions_imported: 0,
         folder_links_imported: 0,
     };
-    
+
     match mode {
         ImportMode::Replace => {
             // Replace all
             save_projects(&dir, &bundle.projects)?;
             result.projects_imported = bundle.projects.len();
-            
+
             save_profiles(&dir, &bundle.profiles)?;
             result.profiles_imported = bundle.profiles.len();
-            
+
             save_sessions(&dir, &bundle.sessions)?;
             result.sessions_imported = bundle.sessions.len();
-            
+
             save_folder_links(&dir, &bundle.folder_links)?;
             result.folder_links_imported = bundle.folder_links.paths.len();
         }
         ImportMode::Merge => {
             // Merge projects
             let mut existing_projects = load_projects(&dir);
-            let existing_paths: std::collections::HashSet<_> = 
+            let existing_paths: std::collections::HashSet<_> =
                 existing_projects.iter().map(|p| p.path.clone()).collect();
             for p in bundle.projects {
                 if !existing_paths.contains(&p.path) {
@@ -100,20 +102,19 @@ pub fn import_settings(
                 }
             }
             save_projects(&dir, &existing_projects)?;
-            
+
             // Merge profiles
             let mut existing_profiles = load_profiles(&dir);
             for (k, v) in bundle.profiles {
-                if !existing_profiles.contains_key(&k) {
-                    existing_profiles.insert(k, v);
+                if existing_profiles.insert(k, v).is_none() {
                     result.profiles_imported += 1;
                 }
             }
             save_profiles(&dir, &existing_profiles)?;
-            
+
             // Merge sessions
             let mut existing_sessions = load_sessions(&dir);
-            let existing_ids: std::collections::HashSet<_> = 
+            let existing_ids: std::collections::HashSet<_> =
                 existing_sessions.iter().map(|s| s.id.clone()).collect();
             for s in bundle.sessions {
                 if !existing_ids.contains(&s.id) {
@@ -122,10 +123,10 @@ pub fn import_settings(
                 }
             }
             save_sessions(&dir, &existing_sessions)?;
-            
+
             // Merge folder links
             let mut existing_links = load_folder_links(&dir);
-            let existing_set: std::collections::HashSet<_> = 
+            let existing_set: std::collections::HashSet<_> =
                 existing_links.paths.iter().cloned().collect();
             for p in bundle.folder_links.paths {
                 if !existing_set.contains(&p) {
@@ -136,7 +137,7 @@ pub fn import_settings(
             save_folder_links(&dir, &existing_links)?;
         }
     }
-    
+
     Ok(result)
 }
 
@@ -170,6 +171,7 @@ mod tests {
                     max_attempts: 3,
                     max_actions: 10,
                     goal_template: Some("Test goal".to_string()),
+                    online_auto_use_as_context: None,
                 },
             )]),
             sessions: vec![],
@@ -183,11 +185,11 @@ mod tests {
     fn test_settings_bundle_serialization() {
         let bundle = create_test_bundle();
         let json = serde_json::to_string(&bundle).unwrap();
-        
+
         assert!(json.contains("\"version\":\"2.4.4\""));
         assert!(json.contains("\"Test Project\""));
         assert!(json.contains("\"/test/folder\""));
-        
+
         let parsed: SettingsBundle = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.version, "2.4.4");
         assert_eq!(parsed.projects.len(), 1);
@@ -204,7 +206,7 @@ mod tests {
             "sessions": [],
             "folder_links": { "paths": [] }
         }"#;
-        
+
         let bundle: SettingsBundle = serde_json::from_str(json).unwrap();
         assert_eq!(bundle.version, "2.4.4");
         assert!(bundle.projects.is_empty());

@@ -34,7 +34,8 @@ fn save_state(app: &AppHandle, state: &UndoRedoStateFile) -> io::Result<()> {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent)?;
     }
-    let bytes = serde_json::to_vec_pretty(state).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let bytes =
+        serde_json::to_vec_pretty(state).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     fs::write(p, bytes)
 }
 
@@ -73,8 +74,5 @@ pub fn clear_redo(app: &AppHandle) -> io::Result<()> {
 
 pub fn get_undo_redo_state(app: &AppHandle) -> (bool, bool) {
     let state = load_state(app);
-    (
-        !state.undo_stack.is_empty(),
-        !state.redo_stack.is_empty(),
-    )
+    (!state.undo_stack.is_empty(), !state.redo_stack.is_empty())
 }

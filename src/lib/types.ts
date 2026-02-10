@@ -227,6 +227,45 @@ export interface OnlineAnswer {
   notes?: string;
 }
 
+/** Источник в domain note */
+export interface DomainNoteSource {
+  url: string;
+  title: string;
+}
+
+/** Domain note (curated from online research) */
+export interface DomainNote {
+  id: string;
+  created_at: number;
+  topic: string;
+  tags: string[];
+  content_md: string;
+  sources: DomainNoteSource[];
+  confidence: number;
+  ttl_days: number;
+  usage_count: number;
+  last_used_at?: number | null;
+  pinned: boolean;
+}
+
+/** Domain notes file (.papa-yu/notes/domain_notes.json) */
+export interface DomainNotes {
+  schema_version: number;
+  updated_at: number;
+  notes: DomainNote[];
+}
+
+/** Один proposal из еженедельного отчёта (B3) */
+export interface WeeklyProposal {
+  kind: "prompt_change" | "setting_change" | "golden_trace_add" | "limit_tuning" | "safety_rule";
+  title: string;
+  why: string;
+  risk: "low" | "medium" | "high";
+  steps: string[];
+  expected_impact: string;
+  evidence?: string;
+}
+
 /** Результат еженедельного отчёта */
 export interface WeeklyReportResult {
   ok: boolean;

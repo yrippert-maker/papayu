@@ -224,6 +224,17 @@ export async function fetchTrendsRecommendations(): Promise<TrendsResult> {
   return invoke<TrendsResult>("fetch_trends_recommendations");
 }
 
+/** Тренды дизайна и иконок из безопасных источников (Tavily + allowlist доменов). Для ИИ: передовые дизайнерские решения. */
+export async function researchDesignTrends(
+  query?: string | null,
+  maxResults?: number
+): Promise<TrendsResult> {
+  return invoke<TrendsResult>("research_design_trends", {
+    query: query ?? null,
+    maxResults: maxResults ?? null,
+  });
+}
+
 // Settings export/import
 
 export interface ImportResult {
@@ -261,7 +272,61 @@ export async function saveReport(projectPath: string, reportMd: string, date?: s
   return invoke("save_report_cmd", { projectPath, reportMd, date: date ?? null });
 }
 
-/** Online research: поиск Tavily + fetch + LLM summarize. Требует PAPAYU_ONLINE_RESEARCH=1, PAPAYU_TAVILY_API_KEY. */
-export async function researchAnswer(query: string): Promise<import("./types").OnlineAnswer> {
-  return invoke("research_answer_cmd", { query });
+/** B3: Apply a single project setting (whitelist: auto_check, max_attempts, max_actions, goal_template, onlineAutoUseAsContext). */
+export async function applyProjectSetting(
+  projectPath: string,
+  key: string,
+  value: boolean | number | string
+): Promise<void> {
+  return invoke("apply_project_setting_cmd", { projectPath, key, value });
+}
+
+/** Online research: поиск Tavily + fetch + LLM summarize. Требует PAPAYU_ONLINE_RESEARCH=1, PAPAYU_TAVILY_API_KEY. projectPath optional → cache in project .papa-yu/cache/. */
+export async function researchAnswer(
+  query: string,
+  projectPath?: string | null
+): Promise<import("./types").OnlineAnswer> {
+  return invoke("research_answer_cmd", { query, projectPath: projectPath ?? null });
+}
+
+/** Domain notes: load for project */
+export async function loadDomainNotes(projectPath: string): Promise<import("./types").DomainNotes> {
+  return invoke("load_domain_notes_cmd", { projectPath });
+}
+
+/** Domain notes: save (after UI edit) */
+export async function saveDomainNotes(projectPath: string, data: import("./types").DomainNotes): Promise<void> {
+  return invoke("save_domain_notes_cmd", { projectPath, data });
+}
+
+/** Domain notes: delete note by id */
+export async function deleteDomainNote(projectPath: string, noteId: string): Promise<boolean> {
+  return invoke("delete_domain_note_cmd", { projectPath, noteId });
+}
+
+/** Domain notes: clear expired (non-pinned). Returns count removed */
+export async function clearExpiredDomainNotes(projectPath: string): Promise<number> {
+  return invoke("clear_expired_domain_notes_cmd", { projectPath });
+}
+
+/** Domain notes: set pinned */
+export async function pinDomainNote(projectPath: string, noteId: string, pinned: boolean): Promise<boolean> {
+  return invoke("pin_domain_note_cmd", { projectPath, noteId, pinned });
+}
+
+/** Domain notes: distill OnlineAnswer into a short note and save */
+export async function distillAndSaveDomainNote(
+  projectPath: string,
+  query: string,
+  answerMd: string,
+  sources: import("./types").DomainNoteSource[],
+  confidence: number
+): Promise<import("./types").DomainNote> {
+  return invoke("distill_and_save_domain_note_cmd", {
+    projectPath,
+    query,
+    answerMd,
+    sources,
+    confidence,
+  });
 }

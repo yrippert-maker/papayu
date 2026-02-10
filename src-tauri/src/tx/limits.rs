@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use crate::types::{Action, ActionKind};
 use crate::tx::safe_join;
+use crate::types::{Action, ActionKind};
 
 pub const MAX_ACTIONS: usize = 50;
 pub const MAX_FILES_TOUCHED: usize = 50;
@@ -30,7 +30,11 @@ pub const PATH_FORBIDDEN: &str = "PATH_FORBIDDEN";
 pub fn preflight_actions(root: &Path, actions: &[Action]) -> Result<(), (String, String)> {
     if actions.len() > MAX_ACTIONS {
         return Err((
-            format!("Превышен лимит действий: {} (макс. {})", actions.len(), MAX_ACTIONS),
+            format!(
+                "Превышен лимит действий: {} (макс. {})",
+                actions.len(),
+                MAX_ACTIONS
+            ),
             LIMIT_EXCEEDED.into(),
         ));
     }
@@ -50,10 +54,7 @@ pub fn preflight_actions(root: &Path, actions: &[Action]) -> Result<(), (String,
 
         for prefix in FORBIDDEN_PREFIXES {
             if rel.starts_with(prefix) || rel == prefix.trim_end_matches('/') {
-                return Err((
-                    format!("Запрещённая зона: {}", rel),
-                    PATH_FORBIDDEN.into(),
-                ));
+                return Err((format!("Запрещённая зона: {}", rel), PATH_FORBIDDEN.into()));
             }
         }
 
@@ -78,6 +79,20 @@ pub fn preflight_actions(root: &Path, actions: &[Action]) -> Result<(), (String,
                 files_touched += 1;
                 total_bytes += a.patch.as_deref().map(|s| s.len() as u64).unwrap_or(0);
             }
+            ActionKind::EditFile => {
+                files_touched += 1;
+                let edit_bytes: u64 = a
+                    .edits
+                    .as_deref()
+                    .map(|edits| {
+                        edits
+                            .iter()
+                            .map(|e| (e.before.len() + e.after.len()) as u64)
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                total_bytes += edit_bytes;
+            }
             ActionKind::CreateDir => {
                 dirs_created += 1;
             }
@@ -90,19 +105,28 @@ pub fn preflight_actions(root: &Path, actions: &[Action]) -> Result<(), (String,
 
     if files_touched > MAX_FILES_TOUCHED {
         return Err((
-            format!("Превышен лимит файлов: {} (макс. {})", files_touched, MAX_FILES_TOUCHED),
+            format!(
+                "Превышен лимит файлов: {} (макс. {})",
+                files_touched, MAX_FILES_TOUCHED
+            ),
             LIMIT_EXCEEDED.into(),
         ));
     }
     if dirs_created > MAX_DIRS_CREATED {
         return Err((
-            format!("Превышен лимит создаваемых папок: {} (макс. {})", dirs_created, MAX_DIRS_CREATED),
+            format!(
+                "Превышен лимит создаваемых папок: {} (макс. {})",
+                dirs_created, MAX_DIRS_CREATED
+            ),
             LIMIT_EXCEEDED.into(),
         ));
     }
     if total_bytes > MAX_BYTES_WRITTEN {
         return Err((
-            format!("Превышен лимит объёма записи: {} байт (макс. {})", total_bytes, MAX_BYTES_WRITTEN),
+            format!(
+                "Превышен лимит объёма записи: {} байт (макс. {})",
+                total_bytes, MAX_BYTES_WRITTEN
+            ),
             LIMIT_EXCEEDED.into(),
         ));
     }

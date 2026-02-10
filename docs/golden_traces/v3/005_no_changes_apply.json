@@ -1,0 +1,21 @@
+{
+  "protocol": {
+    "schema_version": 3,
+    "schema_hash": "10ece82f5e140c9cc5c5f0dd72757fba80c8f86034263d85716ae461c2e679ec"
+  },
+  "request": {
+    "mode": "apply",
+    "input_chars": 15000,
+    "token_budget": 4096,
+    "strict_json": true
+  },
+  "context": {},
+  "result": {
+    "validated_json": {
+      "actions": [],
+      "summary": "NO_CHANGES: ничего менять не требуется."
+    },
+    "validation_outcome": "ok",
+    "error_code": null
+  }
+}

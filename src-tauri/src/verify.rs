@@ -137,24 +137,48 @@ pub fn verify_project(path: &str) -> VerifyResult {
                 if pkg.exists() {
                     if let Ok(s) = std::fs::read_to_string(&pkg) {
                         if s.contains("\"test\"") {
-                            ("npm".into(), vec!["run".into(), "-s".into(), "test".into()], "npm test".into())
+                            (
+                                "npm".into(),
+                                vec!["run".into(), "-s".into(), "test".into()],
+                                "npm test".into(),
+                            )
                         } else if s.contains("\"build\"") {
-                            ("npm".into(), vec!["run".into(), "-s".into(), "build".into()], "npm run build".into())
+                            (
+                                "npm".into(),
+                                vec!["run".into(), "-s".into(), "build".into()],
+                                "npm run build".into(),
+                            )
                         } else if s.contains("\"lint\"") {
-                            ("npm".into(), vec!["run".into(), "-s".into(), "lint".into()], "npm run lint".into())
+                            (
+                                "npm".into(),
+                                vec!["run".into(), "-s".into(), "lint".into()],
+                                "npm run lint".into(),
+                            )
                         } else {
-                            ("npm".into(), vec!["run".into(), "-s".into(), "build".into()], "npm run build".into())
+                            (
+                                "npm".into(),
+                                vec!["run".into(), "-s".into(), "build".into()],
+                                "npm run build".into(),
+                            )
                         }
                     } else {
-                        ("npm".into(), vec!["run".into(), "-s".into(), "build".into()], "npm run build".into())
+                        (
+                            "npm".into(),
+                            vec!["run".into(), "-s".into(), "build".into()],
+                            "npm run build".into(),
+                        )
                     }
                 } else {
-                    ("npm".into(), vec!["run".into(), "-s".into(), "build".into()], "npm run build".into())
+                    (
+                        "npm".into(),
+                        vec!["run".into(), "-s".into(), "build".into()],
+                        "npm run build".into(),
+                    )
                 }
             };
-            let allowed = allowlist.get("node").and_then(|entries| {
-                entries.iter().find(|e| e.exe == exe && e.args == args)
-            });
+            let allowed = allowlist
+                .get("node")
+                .and_then(|entries| entries.iter().find(|e| e.exe == exe && e.args == args));
             let timeout = allowed.and_then(|e| e.timeout_sec).unwrap_or(60);
             let name_str = allowed.map(|e| e.name.as_str()).unwrap_or(name.as_str());
             let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -195,6 +219,10 @@ pub fn verify_project(path: &str) -> VerifyResult {
         } else {
             Some("verify failed".to_string())
         },
-        error_code: if ok { None } else { Some("VERIFY_FAILED".into()) },
+        error_code: if ok {
+            None
+        } else {
+            Some("VERIFY_FAILED".into())
+        },
     }
 }

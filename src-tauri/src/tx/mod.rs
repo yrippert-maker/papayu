@@ -47,7 +47,8 @@ pub fn write_manifest(app: &AppHandle, manifest: &TxManifest) -> io::Result<()> 
     let tx_id = &manifest.tx_id;
     fs::create_dir_all(tx_dir(app, tx_id))?;
     let p = tx_manifest_path(app, tx_id);
-    let bytes = serde_json::to_vec_pretty(manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let bytes =
+        serde_json::to_vec_pretty(manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     fs::write(p, bytes)?;
     Ok(())
 }
@@ -61,7 +62,8 @@ pub fn read_manifest(app: &AppHandle, tx_id: &str) -> io::Result<TxManifest> {
 #[allow(dead_code)]
 pub fn set_latest_tx(app: &AppHandle, tx_id: &str) -> io::Result<()> {
     let p = history_dir(app).join("latest.json");
-    let bytes = serde_json::to_vec_pretty(&json!({ "txId": tx_id })).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let bytes = serde_json::to_vec_pretty(&json!({ "txId": tx_id }))
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     fs::write(p, bytes)?;
     Ok(())
 }
@@ -132,7 +134,11 @@ pub fn snapshot_before(
         } else {
             touched.push(TxTouchedItem {
                 rel_path: rel.clone(),
-                kind: if rel.ends_with('/') || rel.is_empty() { "dir".into() } else { "file".into() },
+                kind: if rel.ends_with('/') || rel.is_empty() {
+                    "dir".into()
+                } else {
+                    "file".into()
+                },
                 existed: false,
                 bytes: 0,
             });
@@ -149,9 +155,15 @@ pub fn rollback_tx(app: &AppHandle, tx_id: &str) -> Result<(), String> {
     let before = tx_before_dir(app, tx_id);
 
     let items: Vec<(String, String, bool)> = if !manifest.touched.is_empty() {
-        manifest.touched.iter().map(|t| (t.rel_path.clone(), t.kind.clone(), t.existed)).collect()
+        manifest
+            .touched
+            .iter()
+            .map(|t| (t.rel_path.clone(), t.kind.clone(), t.existed))
+            .collect()
     } else if let Some(ref snap) = manifest.snapshot_items {
-        snap.iter().map(|s| (s.rel_path.clone(), s.kind.clone(), s.existed)).collect()
+        snap.iter()
+            .map(|s| (s.rel_path.clone(), s.kind.clone(), s.existed))
+            .collect()
     } else {
         return Err("manifest has no touched or snapshot_items".into());
     };
@@ -215,7 +227,11 @@ fn protocol_version(override_version: Option<u32>) -> u32 {
 }
 
 /// Apply a single action to disk (v2.3.3: for atomic apply + rollback on first failure).
-pub fn apply_one_action(root: &Path, action: &Action, protocol_override: Option<u32>) -> Result<(), String> {
+pub fn apply_one_action(
+    root: &Path,
+    action: &Action,
+    protocol_override: Option<u32>,
+) -> Result<(), String> {
     let full = safe_join(root, &action.path)?;
     match action.kind {
         ActionKind::CreateFile | ActionKind::UpdateFile => {
@@ -238,6 +254,9 @@ pub fn apply_one_action(root: &Path, action: &Action, protocol_override: Option<
         }
         ActionKind::PatchFile => {
             apply_patch_file_impl(root, &action.path, action)?;
+        }
+        ActionKind::EditFile => {
+            apply_edit_file_impl(root, &action.path, action)?;
         }
         ActionKind::CreateDir => {
             fs::create_dir_all(&full).map_err(|e| e.to_string())?;
@@ -300,13 +319,69 @@ fn apply_patch_file_impl(root: &Path, path: &str, action: &Action) -> Result<(),
     fs::write(&full, new_text).map_err(|e| e.to_string())
 }
 
-/// Порядок применения: CREATE_DIR → CREATE_FILE/UPDATE_FILE → PATCH_FILE → DELETE_FILE → DELETE_DIR.
+fn apply_edit_file_impl(root: &Path, path: &str, action: &Action) -> Result<(), String> {
+    use crate::patch::{
+        apply_edit_file_to_text, is_valid_sha256_hex, normalize_lf_with_trailing_newline,
+        sha256_hex, ERR_EDIT_APPLY_FAILED, ERR_EDIT_BASE_MISMATCH, ERR_EDIT_BASE_SHA256_INVALID,
+        ERR_EDIT_NO_EDITS, ERR_NON_UTF8_FILE,
+    };
+    let base_sha256 = action.base_sha256.as_deref().unwrap_or("");
+    let edits = action.edits.as_deref().unwrap_or(&[]);
+    if !is_valid_sha256_hex(base_sha256) {
+        return Err(format!(
+            "{}: base_sha256 invalid (64 hex chars)",
+            ERR_EDIT_BASE_SHA256_INVALID
+        ));
+    }
+    if edits.is_empty() {
+        return Err(format!(
+            "{}: edits required for EDIT_FILE",
+            ERR_EDIT_NO_EDITS
+        ));
+    }
+    let full = safe_join(root, path)?;
+    if !full.is_file() {
+        return Err(format!(
+            "{}: file not found for EDIT_FILE '{}'",
+            ERR_EDIT_BASE_MISMATCH, path
+        ));
+    }
+    let old_bytes = fs::read(&full).map_err(|e| format!("ERR_IO: {}", e))?;
+    let old_sha = sha256_hex(&old_bytes);
+    if old_sha != base_sha256 {
+        return Err(format!(
+            "{}: base mismatch: have {}, want {}",
+            ERR_EDIT_BASE_MISMATCH, old_sha, base_sha256
+        ));
+    }
+    let old_text = String::from_utf8(old_bytes)
+        .map_err(|_| format!("{}: EDIT_FILE requires utf-8", ERR_NON_UTF8_FILE))?;
+    let mut new_text = apply_edit_file_to_text(&old_text, edits).map_err(|e| {
+        if e.starts_with("ERR_") {
+            e
+        } else {
+            ERR_EDIT_APPLY_FAILED.to_string()
+        }
+    })?;
+    let normalize_eol = std::env::var("PAPAYU_NORMALIZE_EOL")
+        .map(|s| s.trim().to_lowercase() == "lf")
+        .unwrap_or(false);
+    if normalize_eol {
+        new_text = normalize_lf_with_trailing_newline(&new_text);
+    }
+    if let Some(p) = full.parent() {
+        fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    fs::write(&full, new_text).map_err(|e| e.to_string())
+}
+
+/// Порядок применения: CREATE_DIR → CREATE_FILE/UPDATE_FILE → EDIT_FILE/PATCH_FILE → DELETE_FILE → DELETE_DIR.
 pub fn sort_actions_for_apply(actions: &mut [Action]) {
     fn order(k: &ActionKind) -> u8 {
         match k {
             ActionKind::CreateDir => 0,
             ActionKind::CreateFile | ActionKind::UpdateFile => 1,
-            ActionKind::PatchFile => 2,
+            ActionKind::EditFile | ActionKind::PatchFile => 2,
             ActionKind::DeleteFile => 3,
             ActionKind::DeleteDir => 4,
         }

@@ -88,6 +88,7 @@ pub async fn generate_actions_from_report(
                 ),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             });
         }
     }
@@ -106,6 +107,7 @@ pub async fn generate_actions_from_report(
                 ),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             });
         }
     }
@@ -122,6 +124,7 @@ pub async fn generate_actions_from_report(
                 content: Some("MIT License\n\nCopyright (c) <year> <copyright holders>\n".into()),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             });
         }
     }
@@ -136,6 +139,7 @@ pub async fn generate_actions_from_report(
                 content: None,
                 patch: None,
                 base_sha256: None,
+                edits: None,
             });
         }
         let keep_path = rel("tests/.gitkeep");
@@ -146,6 +150,7 @@ pub async fn generate_actions_from_report(
                 content: Some("".into()),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             });
         }
     }

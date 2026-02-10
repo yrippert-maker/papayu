@@ -68,6 +68,24 @@
           "time_estimate_minutes": { "type": "integer", "minimum": 1 }
         }
       }
+    },
+    "proposals": {
+      "type": "array",
+      "description": "Concrete actionable proposals (prompt_change, setting_change, golden_trace_add, limit_tuning, safety_rule). Only propose what bundle+deltas justify.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "title", "why", "risk", "steps", "expected_impact"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["prompt_change", "setting_change", "golden_trace_add", "limit_tuning", "safety_rule"] },
+          "title": { "type": "string" },
+          "why": { "type": "string" },
+          "risk": { "type": "string", "enum": ["low", "medium", "high"] },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "expected_impact": { "type": "string" },
+          "evidence": { "type": "string" }
+        }
+      }
     }
   }
 }

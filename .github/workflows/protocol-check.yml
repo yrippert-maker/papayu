@@ -1,4 +1,4 @@
-name: Protocol check (v1 + v2)
+name: CI (fmt, clippy, audit, protocol, frontend build)
 
 on:
   push:
@@ -7,13 +7,29 @@ on:
     branches: [main, master]
 
 jobs:
-  protocol:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install and build
+        run: npm ci && npm run build
+
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -24,5 +40,25 @@ jobs:
             target
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: golden_traces (v1 + v2)
-        run: cd src-tauri && cargo test golden_traces --no-fail-fast
+      - name: Format check
+        run: cd src-tauri && cargo fmt --check
+
+      - name: Clippy
+        run: cd src-tauri && cargo clippy --all-targets --
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Cargo audit
+        run: cd src-tauri && cargo audit
+        continue-on-error: true
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Cargo deny
+        run: cd src-tauri && cargo deny check
+        continue-on-error: true
+
+      - name: Tests (all, including golden_traces)
+        run: cd src-tauri && cargo test --no-fail-fast

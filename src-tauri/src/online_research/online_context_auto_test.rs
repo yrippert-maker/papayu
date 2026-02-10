@@ -20,13 +20,19 @@ mod tests {
     #[test]
     fn test_extract_error_code_prefix_timeout() {
         let msg = "LLM_REQUEST_TIMEOUT: request timed out";
-        assert_eq!(online_research::extract_error_code_prefix(msg), "LLM_REQUEST_TIMEOUT");
+        assert_eq!(
+            online_research::extract_error_code_prefix(msg),
+            "LLM_REQUEST_TIMEOUT"
+        );
     }
 
     #[test]
     fn test_extract_error_code_prefix_schema() {
         let msg = "ERR_SCHEMA_VALIDATION: missing required property";
-        assert_eq!(online_research::extract_error_code_prefix(msg), "ERR_SCHEMA_VALIDATION");
+        assert_eq!(
+            online_research::extract_error_code_prefix(msg),
+            "ERR_SCHEMA_VALIDATION"
+        );
     }
 
     #[test]

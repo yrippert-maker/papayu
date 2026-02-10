@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 const SCHEMA_RAW: &str = include_str!("../../config/llm_response_schema.json");
 const SCHEMA_V2_RAW: &str = include_str!("../../config/llm_response_schema_v2.json");
+const SCHEMA_V3_RAW: &str = include_str!("../../config/llm_response_schema_v3.json");
 
 fn protocol_version(override_version: Option<u32>) -> u32 {
     crate::protocol::protocol_version(override_version)
@@ -34,7 +35,9 @@ pub(crate) fn schema_hash() -> String {
 }
 
 pub(crate) fn schema_hash_for_version(version: u32) -> String {
-    let raw = if version == 2 {
+    let raw = if version == 3 {
+        SCHEMA_V3_RAW
+    } else if version == 2 {
         SCHEMA_V2_RAW
     } else {
         SCHEMA_RAW
@@ -122,7 +125,10 @@ fn redact_secrets(s: &str) -> String {
     while let Some(start) = out[pos..].find("sk-") {
         let abs_start = pos + start;
         let after = &out[abs_start + 3..];
-        let rest_len = after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').count();
+        let rest_len = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .count();
         let end = abs_start + 3 + rest_len.min(50);
         if end <= out.len() {
             out.replace_range(abs_start..end, "__REDACTED_API_KEY__");
@@ -136,7 +142,10 @@ fn redact_secrets(s: &str) -> String {
     while let Some(start) = out[pos..].find("Bearer ") {
         let abs_start = pos + start;
         let after = &out[abs_start + 7..];
-        let rest_len = after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.').count();
+        let rest_len = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+            .count();
         let end = abs_start + 7 + rest_len.min(60);
         if end <= out.len() {
             out.replace_range(abs_start..end, "__REDACTED_BEARER__");
@@ -177,7 +186,14 @@ fn write_trace(project_path: &str, trace_id: &str, trace: &mut serde_json::Value
                     if let Some(s) = raw.as_str() {
                         obj.insert("raw_content_redacted".into(), serde_json::Value::Bool(true));
                         let preview: String = s.chars().take(200).collect();
-                        obj.insert("raw_content_preview".into(), serde_json::Value::String(format!("{}... ({} chars)", preview, s.len())));
+                        obj.insert(
+                            "raw_content_preview".into(),
+                            serde_json::Value::String(format!(
+                                "{}... ({} chars)",
+                                preview,
+                                s.len()
+                            )),
+                        );
                     }
                 }
             }
@@ -196,7 +212,10 @@ fn write_trace(project_path: &str, trace_id: &str, trace: &mut serde_json::Value
             let trace_dir = root.join(".papa-yu").join("traces");
             let _ = fs::create_dir_all(&trace_dir);
             let trace_file = trace_dir.join(format!("{}.json", trace_id));
-            let _ = fs::write(&trace_file, serde_json::to_string_pretty(trace).unwrap_or_default());
+            let _ = fs::write(
+                &trace_file,
+                serde_json::to_string_pretty(trace).unwrap_or_default(),
+            );
         }
     }
 }
@@ -301,20 +320,53 @@ PATCH_FILE правила:
 Запреты:
 - Не добавляй новых полей. Не изменяй защищённые пути. Не придумывай base_sha256."#;
 
+/// System prompt v3: Protocol v3 (EDIT_FILE по умолчанию, PATCH_FILE fallback).
+pub const FIX_PLAN_SYSTEM_PROMPT_V3: &str = r#"Ты — инженерный ассистент внутри программы, работающей по Protocol v3.
+
+Формат ответа:
+- Всегда возвращай ТОЛЬКО валидный JSON, строго по JSON Schema v3.
+- Корневой объект, поле "actions" обязательно.
+- Никаких комментариев, пояснений или текста вне JSON.
+
+Правила изменений файлов:
+- Для существующих файлов используй EDIT_FILE, а не PATCH_FILE.
+- base_sha256 бери из FILE[path] (sha256=...) в контексте.
+- Правки минимальные: меняй только нужные строки, без форматирования файла.
+- anchor должен быть устойчивым и уникальным (фрагмент кода/строки).
+- before — точный фрагмент, который уже есть в файле рядом с anchor; after — заменяющий фрагмент.
+
+EDIT_FILE:
+- kind: EDIT_FILE, path, base_sha256 (64 hex), edits: [{ op: "replace", anchor, before, after, occurrence?, context_lines? }].
+- anchor: строка для поиска в файле (уникальная или с occurrence).
+- before/after: точное совпадение и замена в окне вокруг anchor.
+
+Режимы:
+- PLAN: actions ДОЛЖЕН быть пустым массивом [], summary обязателен.
+- APPLY: если изменений нет — actions=[], summary НАЧИНАЕТСЯ с "NO_CHANGES:"; иначе actions непустой.
+
+Запреты:
+- Не добавляй новых полей. Не изменяй защищённые пути. Не придумывай base_sha256."#;
+
 /// Возвращает system prompt по режиму и protocol_version.
 fn get_system_prompt_for_mode() -> &'static str {
     let mode = std::env::var("PAPAYU_LLM_MODE").unwrap_or_else(|_| "chat".into());
-    let use_v2 = protocol_version(None) == 2;
+    let ver = protocol_version(None);
+    let use_v3 = ver == 3;
+    let use_v2 = ver == 2;
     match mode.trim().to_lowercase().as_str() {
         "fixit" | "fix-it" | "fix_it" => {
-            if use_v2 {
+            if use_v3 {
+                FIX_PLAN_SYSTEM_PROMPT_V3
+            } else if use_v2 {
                 FIX_PLAN_SYSTEM_PROMPT_V2
             } else {
                 FIXIT_SYSTEM_PROMPT
             }
         }
         "fix-plan" | "fix_plan" => {
-            if use_v2 {
+            if use_v3 {
+                FIX_PLAN_SYSTEM_PROMPT_V3
+            } else if use_v2 {
                 FIX_PLAN_SYSTEM_PROMPT_V2
             } else {
                 FIX_PLAN_SYSTEM_PROMPT
@@ -324,12 +376,20 @@ fn get_system_prompt_for_mode() -> &'static str {
     }
 }
 
-/// Проверяет, нужен ли fallback на v1 для APPLY.
-/// repair_attempt: 0 = первый retry (repair-first для PATCH_APPLY/UPDATE_EXISTING), 1 = repair уже пробовали.
+/// Проверяет, нужен ли fallback на v1 для APPLY (при активном v2).
 pub fn is_protocol_fallback_applicable(apply_error_code: &str, repair_attempt: u32) -> bool {
-    crate::protocol::protocol_default() == 2
+    crate::protocol::protocol_version(None) == 2
         && crate::protocol::protocol_fallback_enabled()
         && crate::protocol::should_fallback_to_v1(apply_error_code, repair_attempt)
+}
+
+/// Проверяет, нужен ли fallback v3→v2 для APPLY.
+pub fn is_protocol_fallback_v3_to_v2_applicable(
+    apply_error_code: &str,
+    repair_attempt: u32,
+) -> bool {
+    crate::protocol::protocol_version(None) == 3
+        && crate::protocol::should_fallback_to_v2(apply_error_code, repair_attempt)
 }
 
 /// Проверяет, включён ли LLM-планировщик (задан URL).
@@ -477,9 +537,11 @@ const REPAIR_PROMPT_PLAN_ACTIONS_MUST_BE_EMPTY: &str = r#"
 
 /// v2 repair hints для PATCH_FILE (для repair flow / UI)
 #[allow(dead_code)]
-const REPAIR_ERR_PATCH_NOT_UNIFIED: &str = "ERR_PATCH_NOT_UNIFIED: patch должен быть unified diff (---/+++ и @@ hunks)";
+const REPAIR_ERR_PATCH_NOT_UNIFIED: &str =
+    "ERR_PATCH_NOT_UNIFIED: patch должен быть unified diff (---/+++ и @@ hunks)";
 #[allow(dead_code)]
-const REPAIR_ERR_BASE_MISMATCH: &str = "ERR_BASE_MISMATCH: файл изменился, верни PLAN и запроси read_file заново";
+const REPAIR_ERR_BASE_MISMATCH: &str =
+    "ERR_BASE_MISMATCH: файл изменился, верни PLAN и запроси read_file заново";
 #[allow(dead_code)]
 const REPAIR_ERR_PATCH_APPLY_FAILED: &str = "ERR_PATCH_APPLY_FAILED: патч не применяется, верни PLAN и запроси больше контекста вокруг изменения";
 #[allow(dead_code)]
@@ -499,8 +561,22 @@ fn repair_err_base_sha256_not_from_context(path: &str, sha256: &str) -> String {
     )
 }
 
-/// Строит repair prompt с конкретным sha256 из контекста (v2 + PATCH_FILE).
-/// Возвращает Some((prompt, paths)), если нашли sha для PATCH_FILE с неверным base_sha256.
+/// v3: repair для EDIT_FILE (ERR_EDIT_BASE_MISMATCH) — инжект sha из контекста.
+fn repair_err_edit_base_mismatch(path: &str, sha256: &str) -> String {
+    format!(
+        r#"ERR_EDIT_BASE_SHA256_NOT_FROM_CONTEXT:
+Для EDIT_FILE по пути "{}" base_sha256 должен быть ровно sha256 из контекста.
+Используй это значение base_sha256: {}
+
+Верни ТОЛЬКО валидный JSON по схеме v3.
+Для изменения файла используй EDIT_FILE с base_sha256={} и edits (anchor/before/after).
+НЕ добавляй новых полей."#,
+        path, sha256, sha256
+    )
+}
+
+/// Строит repair prompt с конкретным sha256 из контекста (v2 PATCH_FILE или v3 EDIT_FILE).
+/// Возвращает Some((prompt, paths)), если нашли sha для действия с неверным base_sha256.
 pub fn build_v2_patch_repair_prompt_with_sha(
     last_plan_context: &str,
     validated_json: &serde_json::Value,
@@ -508,9 +584,7 @@ pub fn build_v2_patch_repair_prompt_with_sha(
     use crate::context;
     use crate::patch;
 
-    if protocol_version(None) != 2 {
-        return None;
-    }
+    let ver = protocol_version(None);
     let actions = validated_json
         .get("proposed_changes")
         .and_then(|pc| pc.get("actions"))
@@ -520,19 +594,23 @@ pub fn build_v2_patch_repair_prompt_with_sha(
     for a in actions {
         let obj = a.as_object()?;
         let kind = obj.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-        if kind.to_uppercase() != "PATCH_FILE" {
-            continue;
-        }
         let path = obj.get("path").and_then(|p| p.as_str())?;
-        let sha_ctx = sha_map.get(path)?;
         let base = obj.get("base_sha256").and_then(|b| b.as_str());
+        let sha_ctx = sha_map.get(path)?;
         let needs_repair = match base {
             None => true,
             Some(b) if !patch::is_valid_sha256_hex(b) => true,
             Some(b) if b != sha_ctx.as_str() => true,
             _ => false,
         };
-        if needs_repair {
+        if !needs_repair {
+            continue;
+        }
+        if ver == 3 && kind.to_uppercase() == "EDIT_FILE" {
+            let prompt = repair_err_edit_base_mismatch(path, sha_ctx);
+            return Some((prompt, vec![path.to_string()]));
+        }
+        if ver == 2 && kind.to_uppercase() == "PATCH_FILE" {
             let prompt = repair_err_base_sha256_not_from_context(path, sha_ctx);
             return Some((prompt, vec![path.to_string()]));
         }
@@ -565,7 +643,9 @@ fn validate_json_against_schema(value: &serde_json::Value) -> Result<(), String>
 /// Валидация против схемы конкретной версии (для golden traces).
 #[allow(dead_code)]
 fn compiled_schema_for_version(version: u32) -> Option<JSONSchema> {
-    let raw = if version == 2 {
+    let raw = if version == 3 {
+        SCHEMA_V3_RAW
+    } else if version == 2 {
         SCHEMA_V2_RAW
     } else {
         SCHEMA_RAW
@@ -579,17 +659,11 @@ fn extract_json_from_content(content: &str) -> Result<&str, String> {
     let content = content.trim();
     if let Some(start) = content.find("```json") {
         let after = &content[start + 7..];
-        let end = after
-            .find("```")
-            .map(|i| i)
-            .unwrap_or(after.len());
+        let end = after.find("```").map(|i| i).unwrap_or(after.len());
         Ok(after[..end].trim())
     } else if let Some(start) = content.find("```") {
         let after = &content[start + 3..];
-        let end = after
-            .find("```")
-            .map(|i| i)
-            .unwrap_or(after.len());
+        let end = after.find("```").map(|i| i).unwrap_or(after.len());
         Ok(after[..end].trim())
     } else {
         Ok(content)
@@ -599,9 +673,15 @@ fn extract_json_from_content(content: &str) -> Result<&str, String> {
 /// Нормализует path и проверяет запрещённые сегменты.
 fn validate_path(path: &str, idx: usize) -> Result<(), String> {
     if path.contains('\0') {
-        return Err(format!("actions[{}].path invalid: contains NUL (ERR_INVALID_PATH)", idx));
+        return Err(format!(
+            "actions[{}].path invalid: contains NUL (ERR_INVALID_PATH)",
+            idx
+        ));
     }
-    if path.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+    if path
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
         return Err(format!(
             "actions[{}].path invalid: contains control characters (ERR_INVALID_PATH)",
             idx
@@ -662,6 +742,7 @@ fn validate_action_conflicts(actions: &[Action]) -> Result<(), String> {
         let has_create = kinds.contains(&ActionKind::CreateFile);
         let has_update = kinds.contains(&ActionKind::UpdateFile);
         let has_patch = kinds.contains(&ActionKind::PatchFile);
+        let has_edit = kinds.contains(&ActionKind::EditFile);
         let has_delete_file = kinds.contains(&ActionKind::DeleteFile);
         let has_delete_dir = kinds.contains(&ActionKind::DeleteDir);
         if has_create && has_update {
@@ -670,16 +751,22 @@ fn validate_action_conflicts(actions: &[Action]) -> Result<(), String> {
                 path
             ));
         }
-        // PATCH_FILE конфликтует с CREATE/UPDATE/DELETE на тот же path
-        if has_patch && (has_create || has_update) {
+        // PATCH_FILE / EDIT_FILE конфликтуют с CREATE/UPDATE/DELETE на тот же path
+        if (has_patch || has_edit) && (has_create || has_update) {
             return Err(format!(
-                "ERR_ACTION_CONFLICT: path '{}' has PATCH_FILE and CREATE/UPDATE",
+                "ERR_ACTION_CONFLICT: path '{}' has PATCH_FILE/EDIT_FILE and CREATE/UPDATE",
                 path
             ));
         }
-        if has_patch && (has_delete_file || has_delete_dir) {
+        if (has_patch || has_edit) && (has_delete_file || has_delete_dir) {
             return Err(format!(
-                "ERR_ACTION_CONFLICT: path '{}' has PATCH_FILE and DELETE",
+                "ERR_ACTION_CONFLICT: path '{}' has PATCH_FILE/EDIT_FILE and DELETE",
+                path
+            ));
+        }
+        if has_edit && has_patch {
+            return Err(format!(
+                "ERR_ACTION_CONFLICT: path '{}' has both EDIT_FILE and PATCH_FILE",
                 path
             ));
         }
@@ -759,7 +846,9 @@ fn validate_update_without_base(
     actions: &[Action],
     plan_context: Option<&str>,
 ) -> Result<(), String> {
-    let Some(ctx) = plan_context else { return Ok(()) };
+    let Some(ctx) = plan_context else {
+        return Ok(());
+    };
     let read_paths = extract_files_read_from_plan_context(ctx);
     for (i, a) in actions.iter().enumerate() {
         if a.kind == ActionKind::UpdateFile || a.kind == ActionKind::PatchFile {
@@ -828,7 +917,9 @@ fn validate_actions(actions: &[Action]) -> Result<(), String> {
         if a.path.len() > MAX_PATH_LEN {
             return Err(format!(
                 "actions[{}].path invalid: length {} > {} (ERR_PATH_TOO_LONG)",
-                i, a.path.len(), MAX_PATH_LEN
+                i,
+                a.path.len(),
+                MAX_PATH_LEN
             ));
         }
         match a.kind {
@@ -871,6 +962,68 @@ fn validate_actions(actions: &[Action]) -> Result<(), String> {
                 }
                 total_bytes += a.patch.as_ref().map(|p| p.len()).unwrap_or(0);
             }
+            ActionKind::EditFile => {
+                const MAX_EDITS_PER_ACTION: usize = 50;
+                const MAX_EDIT_BEFORE_AFTER_BYTES: usize = 200_000;
+                let base = a.base_sha256.as_deref().unwrap_or("");
+                let edits = a.edits.as_deref().unwrap_or(&[]);
+                if !crate::patch::is_valid_sha256_hex(base) {
+                    return Err(format!(
+                        "actions[{}].base_sha256 invalid (64 hex chars) (ERR_BASE_SHA256_INVALID)",
+                        i
+                    ));
+                }
+                if edits.is_empty() {
+                    return Err(format!(
+                        "actions[{}].edits required and non-empty for EDIT_FILE (ERR_EDIT_APPLY_FAILED)",
+                        i
+                    ));
+                }
+                if edits.len() > MAX_EDITS_PER_ACTION {
+                    return Err(format!(
+                        "actions[{}].edits count {} > {} (ERR_EDIT_APPLY_FAILED)",
+                        i,
+                        edits.len(),
+                        MAX_EDITS_PER_ACTION
+                    ));
+                }
+                let mut edit_bytes = 0usize;
+                for (j, e) in edits.iter().enumerate() {
+                    if e.anchor.is_empty() || e.before.is_empty() {
+                        return Err(format!(
+                            "actions[{}].edits[{}].anchor and before required (after may be empty for delete) (ERR_EDIT_APPLY_FAILED)",
+                            i, j
+                        ));
+                    }
+                    if e.anchor.contains('\0') || e.before.contains('\0') || e.after.contains('\0')
+                    {
+                        return Err(format!(
+                            "actions[{}].edits[{}] must not contain NUL (ERR_EDIT_APPLY_FAILED)",
+                            i, j
+                        ));
+                    }
+                    if e.occurrence < 1 {
+                        return Err(format!(
+                            "actions[{}].edits[{}].occurrence >= 1 (ERR_EDIT_APPLY_FAILED)",
+                            i, j
+                        ));
+                    }
+                    if e.context_lines > 3 {
+                        return Err(format!(
+                            "actions[{}].edits[{}].context_lines 0..=3 (ERR_EDIT_APPLY_FAILED)",
+                            i, j
+                        ));
+                    }
+                    edit_bytes += e.before.len() + e.after.len();
+                }
+                if edit_bytes > MAX_EDIT_BEFORE_AFTER_BYTES {
+                    return Err(format!(
+                        "actions[{}].edits total before+after {} > {} (ERR_EDIT_APPLY_FAILED)",
+                        i, edit_bytes, MAX_EDIT_BEFORE_AFTER_BYTES
+                    ));
+                }
+                total_bytes += edit_bytes;
+            }
             _ => {}
         }
     }
@@ -902,6 +1055,7 @@ fn parse_actions_from_json(json_str: &str) -> Result<Vec<Action>, String> {
             "CREATE_DIR" => ActionKind::CreateDir,
             "UPDATE_FILE" => ActionKind::UpdateFile,
             "PATCH_FILE" => ActionKind::PatchFile,
+            "EDIT_FILE" => ActionKind::EditFile,
             "DELETE_FILE" => ActionKind::DeleteFile,
             "DELETE_DIR" => ActionKind::DeleteDir,
             _ => ActionKind::CreateFile,
@@ -911,15 +1065,61 @@ fn parse_actions_from_json(json_str: &str) -> Result<Vec<Action>, String> {
             .and_then(|p| p.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("unknown_{}", i));
-        let content = obj.get("content").and_then(|c| c.as_str()).map(|s| s.to_string());
-        let patch = obj.get("patch").and_then(|p| p.as_str()).map(|s| s.to_string());
-        let base_sha256 = obj.get("base_sha256").and_then(|b| b.as_str()).map(|s| s.to_string());
+        let content = obj
+            .get("content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string());
+        let patch = obj
+            .get("patch")
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string());
+        let base_sha256 = obj
+            .get("base_sha256")
+            .and_then(|b| b.as_str())
+            .map(|s| s.to_string());
+        let edits: Option<Vec<crate::types::EditOp>> =
+            obj.get("edits").and_then(|arr| arr.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|v| {
+                        let o = v.as_object()?;
+                        Some(crate::types::EditOp {
+                            op: o
+                                .get("op")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("replace")
+                                .to_string(),
+                            anchor: o
+                                .get("anchor")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            before: o
+                                .get("before")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            after: o
+                                .get("after")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            occurrence: o.get("occurrence").and_then(|x| x.as_u64()).unwrap_or(1)
+                                as u32,
+                            context_lines: o
+                                .get("context_lines")
+                                .and_then(|x| x.as_u64())
+                                .unwrap_or(2) as u32,
+                        })
+                    })
+                    .collect()
+            });
         actions.push(Action {
             kind,
             path,
             content,
             patch,
             base_sha256,
+            edits,
         });
     }
     Ok(actions)
@@ -945,16 +1145,28 @@ fn parse_plan_response(json_str: &str) -> Result<PlanParseResult, String> {
             .and_then(|pc| pc.get("actions").cloned())
             .or_else(|| obj.get("actions").cloned())
             .unwrap_or_else(|| serde_json::Value::Array(vec![]));
-        let memory_patch = obj.get("memory_patch").and_then(|v| v.as_object()).map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<HashMap<_, _>>()
-        });
-        let summary_override = obj.get("summary").and_then(|v| v.as_str()).map(String::from);
-        let context_requests = obj.get("context_requests").and_then(|v| v.as_array()).map(|a| {
-            a.iter().cloned().collect::<Vec<_>>()
-        });
-        (actions_value, memory_patch, summary_override, context_requests)
+        let memory_patch = obj
+            .get("memory_patch")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<HashMap<_, _>>()
+            });
+        let summary_override = obj
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let context_requests = obj
+            .get("context_requests")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().cloned().collect::<Vec<_>>());
+        (
+            actions_value,
+            memory_patch,
+            summary_override,
+            context_requests,
+        )
     } else {
         return Err("expected JSON array or object with 'actions'".into());
     };
@@ -969,6 +1181,127 @@ fn parse_plan_response(json_str: &str) -> Result<PlanParseResult, String> {
 }
 
 const MAX_CONTEXT_ROUNDS: u32 = 2;
+
+/// Один запрос к LLM без repair/retry. Для мульти-провайдера: сбор планов от нескольких ИИ.
+pub async fn request_one_plan(
+    api_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    system_content: &str,
+    user_message: &str,
+    _path: &str,
+) -> Result<AgentPlan, String> {
+    let timeout_sec = std::env::var("PAPAYU_LLM_TIMEOUT_SEC")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(90);
+    let use_strict_json = std::env::var("PAPAYU_LLM_STRICT_JSON")
+        .map(|s| matches!(s.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let temperature = std::env::var("PAPAYU_LLM_TEMPERATURE")
+        .ok()
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let input_chars = system_content.len() + user_message.len();
+    let configured_max_tokens = std::env::var("PAPAYU_LLM_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(DEFAULT_MAX_TOKENS);
+    let max_tokens = if input_chars > INPUT_CHARS_FOR_CAP {
+        configured_max_tokens.min(MAX_TOKENS_WHEN_LARGE_INPUT)
+    } else {
+        configured_max_tokens
+    };
+    let schema_version = current_schema_version();
+    let response_format = if use_strict_json {
+        let raw = if schema_version == 3 {
+            SCHEMA_V3_RAW
+        } else if schema_version == 2 {
+            SCHEMA_V2_RAW
+        } else {
+            SCHEMA_RAW
+        };
+        let schema_json: serde_json::Value =
+            serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}));
+        Some(ResponseFormatJsonSchema {
+            ty: "json_schema".to_string(),
+            json_schema: ResponseFormatJsonSchemaInner {
+                name: "papa_yu_response".to_string(),
+                schema: schema_json,
+                strict: true,
+            },
+        })
+    } else {
+        None
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_sec))
+        .build()
+        .map_err(|e| format!("HTTP client: {}", e))?;
+    let body = ChatRequest {
+        model: model.trim().to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: system_content.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: user_message.to_string(),
+            },
+        ],
+        temperature: Some(temperature),
+        max_tokens: Some(max_tokens),
+        top_p: Some(1.0),
+        presence_penalty: Some(0.0),
+        frequency_penalty: Some(0.0),
+        response_format,
+    };
+    let mut req = client.post(api_url).json(&body);
+    if let Some(key) = api_key {
+        if !key.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", key.trim()));
+        }
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("Request: {}", e))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("Response body: {}", e))?;
+    if !status.is_success() {
+        return Err(format!("API error {}: {}", status, text));
+    }
+    let chat: ChatResponse =
+        serde_json::from_str(&text).map_err(|e| format!("Response JSON: {}", e))?;
+    let content = chat
+        .choices
+        .as_ref()
+        .and_then(|c| c.first())
+        .and_then(|c| c.message.content.as_deref())
+        .ok_or_else(|| "No choices in API response".to_string())?;
+    let json_str = extract_json_from_content(content).map_err(|e| format!("ERR_JSON_EXTRACT: {}", e))?;
+    let json_owned = json_str.to_string();
+    let value: serde_json::Value =
+        serde_json::from_str(&json_owned).map_err(|e| format!("ERR_JSON_PARSE: {}", e))?;
+    validate_json_against_schema(&value).map_err(|e| format!("ERR_SCHEMA_VALIDATION: {}", e))?;
+    let parsed = parse_plan_response(&json_owned)?;
+    let summary = parsed
+        .summary_override
+        .unwrap_or_else(|| format!("План: {} действий.", parsed.actions.len()));
+    Ok(AgentPlan {
+        ok: true,
+        summary,
+        actions: parsed.actions,
+        error: None,
+        error_code: None,
+        plan_json: Some(json_owned),
+        plan_context: None,
+        protocol_version_used: Some(schema_version),
+        online_fallback_suggested: None,
+        online_context_used: Some(false),
+    })
+}
 
 /// Вызывает LLM API и возвращает план (AgentPlan).
 /// Автосбор контекста: env + project prefs в начало user message; при context_requests — до MAX_CONTEXT_ROUNDS раундов.
@@ -1000,8 +1333,8 @@ pub async fn plan(
 ) -> Result<AgentPlan, String> {
     let trace_id = Uuid::new_v4().to_string();
     let effective_protocol = force_protocol_version
-        .filter(|v| *v == 1 || *v == 2)
-        .unwrap_or_else(|| crate::protocol::protocol_default());
+        .filter(|v| *v == 1 || *v == 2 || *v == 3)
+        .unwrap_or_else(|| crate::protocol::protocol_version(None));
 
     let _guard = crate::protocol::set_protocol_version(effective_protocol);
     let api_url = std::env::var("PAPAYU_LLM_API_URL").map_err(|_| "PAPAYU_LLM_API_URL not set")?;
@@ -1010,8 +1343,7 @@ pub async fn plan(
         return Err("PAPAYU_LLM_API_URL is empty".into());
     }
 
-    let model = std::env::var("PAPAYU_LLM_MODEL")
-        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    let model = std::env::var("PAPAYU_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     let api_key = std::env::var("PAPAYU_LLM_API_KEY").ok();
 
     let mem = memory::load_memory(user_prefs_path, project_prefs_path);
@@ -1019,15 +1351,30 @@ pub async fn plan(
     // Переопределение режима для Plan→Apply
     if let Some(of) = output_format_override {
         if of == "plan" || of == "apply" {
-            memory_block.push_str(&format!("\n\nРЕЖИМ_ДЛЯ_ЭТОГО_ЗАПРОСА: {} (соблюдай строго)", of));
+            memory_block.push_str(&format!(
+                "\n\nРЕЖИМ_ДЛЯ_ЭТОГО_ЗАПРОСА: {} (соблюдай строго)",
+                of
+            ));
         }
     }
     let system_prompt = get_system_prompt_for_mode();
-    let system_content = format!("{}{}\n\nLLM_PLAN_SCHEMA_VERSION={}", system_prompt, memory_block, current_schema_version());
+    let system_content = format!(
+        "{}{}\n\nLLM_PLAN_SCHEMA_VERSION={}",
+        system_prompt,
+        memory_block,
+        current_schema_version()
+    );
 
     let project_root = Path::new(path);
     let base_context = context::gather_base_context(project_root, &mem);
-    let prompt_body = build_prompt(path, report_json, user_goal, project_content, design_style, trends_context);
+    let prompt_body = build_prompt(
+        path,
+        report_json,
+        user_goal,
+        project_content,
+        design_style,
+        trends_context,
+    );
     // Эвристики автосбора: Traceback, ImportError и т.д.
     let auto_from_message = context::gather_auto_context_from_message(
         project_root,
@@ -1036,7 +1383,20 @@ pub async fn plan(
     let rest_context = format!("{}{}{}", base_context, prompt_body, auto_from_message);
     let mut online_block_result: Option<crate::online_research::OnlineBlockResult> = None;
     let mut online_context_dropped = false;
+    let mut notes_injected = false;
+    let mut notes_count = 0usize;
+    let mut notes_chars = 0usize;
+    let mut notes_ids: Vec<String> = vec![];
     let mut user_message = rest_context.clone();
+    if let Some((notes_block, ids, chars)) =
+        crate::domain_notes::get_notes_block_for_prompt(project_root, user_goal)
+    {
+        user_message = format!("{}{}", notes_block, user_message);
+        notes_injected = true;
+        notes_count = ids.len();
+        notes_chars = chars;
+        notes_ids = ids;
+    }
     if let Some(md) = online_context_md {
         if !md.trim().is_empty() {
             let max_chars = crate::online_research::online_context_max_chars();
@@ -1083,13 +1443,21 @@ pub async fn plan(
             let mut apply_prompt = String::new();
             // Repair после ERR_BASE_MISMATCH/ERR_BASE_SHA256_INVALID: подставляем sha256 из контекста
             if let Some((code, validated_json_str)) = apply_error_for_repair {
-                let is_base_error = code == "ERR_BASE_MISMATCH" || code == "ERR_BASE_SHA256_INVALID";
+                let is_base_error = code == "ERR_BASE_MISMATCH"
+                    || code == "ERR_BASE_SHA256_INVALID"
+                    || code == "ERR_EDIT_BASE_MISMATCH";
                 if is_base_error {
                     if let Some(ctx) = last_context_for_apply {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(validated_json_str) {
-                            if let Some((repair, paths)) = build_v2_patch_repair_prompt_with_sha(ctx, &val) {
+                        if let Ok(val) =
+                            serde_json::from_str::<serde_json::Value>(validated_json_str)
+                        {
+                            if let Some((repair, paths)) =
+                                build_v2_patch_repair_prompt_with_sha(ctx, &val)
+                            {
                                 repair_injected_paths = paths;
-                                apply_prompt.push_str("\n\n--- REPAIR (ERR_BASE_SHA256_NOT_FROM_CONTEXT) ---\n");
+                                apply_prompt.push_str(
+                                    "\n\n--- REPAIR (ERR_BASE_SHA256_NOT_FROM_CONTEXT) ---\n",
+                                );
                                 apply_prompt.push_str(&repair);
                                 apply_prompt.push_str("\n\nRaw output предыдущего ответа:\n");
                                 apply_prompt.push_str(validated_json_str);
@@ -1098,16 +1466,30 @@ pub async fn plan(
                         }
                     }
                 }
-                // Repair-first для ERR_PATCH_APPLY_FAILED и ERR_V2_UPDATE_EXISTING_FORBIDDEN (без fallback)
+                // Repair-first для ERR_PATCH_APPLY_FAILED, ERR_V2_UPDATE_EXISTING_FORBIDDEN, v3 EDIT_FILE
                 if force_protocol_version != Some(1)
-                    && (code == "ERR_PATCH_APPLY_FAILED" || code == "ERR_V2_UPDATE_EXISTING_FORBIDDEN")
+                    && (code == "ERR_PATCH_APPLY_FAILED"
+                        || code == "ERR_V2_UPDATE_EXISTING_FORBIDDEN"
+                        || code == "ERR_EDIT_ANCHOR_NOT_FOUND"
+                        || code == "ERR_EDIT_BEFORE_NOT_FOUND"
+                        || code == "ERR_EDIT_AMBIGUOUS")
                 {
                     if code == "ERR_PATCH_APPLY_FAILED" {
                         apply_prompt.push_str("\n\n--- REPAIR (ERR_PATCH_APPLY_FAILED) ---\n");
                         apply_prompt.push_str("Увеличь контекст hunks до 3 строк, не меняй соседние блоки. Верни PATCH_FILE с исправленным patch.\n\n");
                     } else if code == "ERR_V2_UPDATE_EXISTING_FORBIDDEN" {
-                        apply_prompt.push_str("\n\n--- REPAIR (ERR_V2_UPDATE_EXISTING_FORBIDDEN) ---\n");
+                        apply_prompt
+                            .push_str("\n\n--- REPAIR (ERR_V2_UPDATE_EXISTING_FORBIDDEN) ---\n");
                         apply_prompt.push_str("Сгенерируй PATCH_FILE вместо UPDATE_FILE для существующих файлов. Используй base_sha256 из контекста.\n\n");
+                    } else if code == "ERR_EDIT_ANCHOR_NOT_FOUND" {
+                        apply_prompt.push_str("\n\n--- REPAIR (ERR_EDIT_ANCHOR_NOT_FOUND) ---\n");
+                        apply_prompt.push_str("anchor не найден в файле. Выбери anchor как точную подстроку из FILE[...] в контексте (например def foo(, class X:, уникальная строка). Проверь регистр и пробелы.\n\n");
+                    } else if code == "ERR_EDIT_BEFORE_NOT_FOUND" {
+                        apply_prompt.push_str("\n\n--- REPAIR (ERR_EDIT_BEFORE_NOT_FOUND) ---\n");
+                        apply_prompt.push_str("before должен быть точным фрагментом рядом с anchor. Скопируй before из FILE[...] в контексте без изменений.\n\n");
+                    } else if code == "ERR_EDIT_AMBIGUOUS" {
+                        apply_prompt.push_str("\n\n--- REPAIR (ERR_EDIT_AMBIGUOUS) ---\n");
+                        apply_prompt.push_str("Сделай anchor более уникальным или сузь before; если нужно — укажи occurrence (номер вхождения).\n\n");
                     }
                     apply_prompt.push_str("Raw output предыдущего ответа:\n");
                     apply_prompt.push_str(validated_json_str);
@@ -1121,6 +1503,18 @@ pub async fn plan(
                 apply_prompt.push_str(ctx);
             }
             user_message.push_str(&apply_prompt);
+        }
+    }
+
+    // Мульти-провайдер: сбор планов от нескольких ИИ и агрегация в один оптимальный
+    if let Ok(providers) = crate::commands::multi_provider::parse_providers_from_env() {
+        if !providers.is_empty() {
+            return crate::commands::multi_provider::fetch_and_aggregate(
+                &system_content,
+                &user_message,
+                path,
+            )
+            .await;
         }
     }
 
@@ -1166,12 +1560,15 @@ pub async fn plan(
 
     let schema_version = current_schema_version();
     let response_format = if use_strict_json {
-        let raw = if schema_version == 2 {
+        let raw = if schema_version == 3 {
+            SCHEMA_V3_RAW
+        } else if schema_version == 2 {
             SCHEMA_V2_RAW
         } else {
             SCHEMA_RAW
         };
-        let schema_json: serde_json::Value = serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}));
+        let schema_json: serde_json::Value =
+            serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}));
         Some(ResponseFormatJsonSchema {
             ty: "json_schema".to_string(),
             json_schema: ResponseFormatJsonSchemaInner {
@@ -1222,7 +1619,10 @@ pub async fn plan(
             &[
                 ("model", model.trim().to_string()),
                 ("schema_version", schema_version.to_string()),
-                ("strict_json", (!skip_response_format && use_strict_json).to_string()),
+                (
+                    "strict_json",
+                    (!skip_response_format && use_strict_json).to_string(),
+                ),
                 ("provider", provider.to_string()),
                 ("token_budget", max_tokens.to_string()),
                 ("input_chars", input_chars.to_string()),
@@ -1241,17 +1641,28 @@ pub async fn plan(
             Err(e) => {
                 let timeout = e.is_timeout();
                 if timeout {
-                    log_llm_event(&trace_id, "LLM_REQUEST_TIMEOUT", &[("timeout_sec", timeout_sec.to_string())]);
+                    log_llm_event(
+                        &trace_id,
+                        "LLM_REQUEST_TIMEOUT",
+                        &[("timeout_sec", timeout_sec.to_string())],
+                    );
                 }
                 return Err(format!(
                     "{}: Request: {}",
-                    if timeout { "LLM_REQUEST_TIMEOUT" } else { "LLM_REQUEST" },
+                    if timeout {
+                        "LLM_REQUEST_TIMEOUT"
+                    } else {
+                        "LLM_REQUEST"
+                    },
                     e
                 ));
             }
         };
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| format!("Response body: {}", e))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Response body: {}", e))?;
 
         if !status.is_success() {
             // Capability detection: если strict_json и ошибка — возможно response_format не поддерживается
@@ -1279,7 +1690,11 @@ pub async fn plan(
 
         log_llm_event(
             &trace_id,
-            if repair_done { "LLM_RESPONSE_REPAIR_RETRY" } else { "LLM_RESPONSE_OK" },
+            if repair_done {
+                "LLM_RESPONSE_REPAIR_RETRY"
+            } else {
+                "LLM_RESPONSE_OK"
+            },
             &[("round", round.to_string())],
         );
 
@@ -1296,7 +1711,14 @@ pub async fn plan(
         let json_str = match extract_json_from_content(content) {
             Ok(s) => s,
             Err(e) if !repair_done => {
-                log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_JSON_EXTRACT".to_string()), ("reason", e.clone())]);
+                log_llm_event(
+                    &trace_id,
+                    "VALIDATION_FAILED",
+                    &[
+                        ("code", "ERR_JSON_EXTRACT".to_string()),
+                        ("reason", e.clone()),
+                    ],
+                );
                 user_message.push_str(&format!(
                     "\n\n---\n{REPAIR_PROMPT}\n\nRaw output:\n{content}"
                 ));
@@ -1326,7 +1748,14 @@ pub async fn plan(
 
         // Локальная валидация схемы (best-effort при strict выкл; обязательна при strict вкл)
         if let Err(e) = validate_json_against_schema(&value) {
-            log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_SCHEMA_VALIDATION".to_string()), ("reason", e.clone())]);
+            log_llm_event(
+                &trace_id,
+                "VALIDATION_FAILED",
+                &[
+                    ("code", "ERR_SCHEMA_VALIDATION".to_string()),
+                    ("reason", e.clone()),
+                ],
+            );
             if !repair_done {
                 user_message.push_str(&format!(
                     "\n\n---\nERR_SCHEMA_VALIDATION: {}\n\n{REPAIR_PROMPT}\n\nRaw output:\n{content}",
@@ -1345,7 +1774,11 @@ pub async fn plan(
         // Жёсткая валидация режимов: PLAN → actions=[], APPLY → actions непустой (если нужны изменения)
         let mode: &str = output_format_override.unwrap_or_else(|| {
             let s = mem.user.output_format.trim();
-            if s.is_empty() { "" } else { mem.user.output_format.as_str() }
+            if s.is_empty() {
+                ""
+            } else {
+                mem.user.output_format.as_str()
+            }
         });
         if mode == "plan" && !parsed.actions.is_empty() {
             if !repair_done {
@@ -1368,7 +1801,10 @@ pub async fn plan(
                 continue;
             }
             if !no_changes {
-                return Err("В режиме APPLY при пустом actions summary обязан начинаться с NO_CHANGES:".to_string());
+                return Err(
+                    "В режиме APPLY при пустом actions summary обязан начинаться с NO_CHANGES:"
+                        .to_string(),
+                );
             }
         }
 
@@ -1400,28 +1836,57 @@ pub async fn plan(
             continue;
         }
 
-        break (parsed.actions, parsed.summary_override, json_str.to_string(), user_message.clone());
+        break (
+            parsed.actions,
+            parsed.summary_override,
+            json_str.to_string(),
+            user_message.clone(),
+        );
     };
 
     // Строгая валидация: path, content, конфликты, UPDATE_WITHOUT_BASE, v2 UPDATE_EXISTING_FORBIDDEN
     if let Err(e) = validate_actions(&last_actions) {
-        log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_ACTIONS".to_string()), ("reason", e.clone())]);
+        log_llm_event(
+            &trace_id,
+            "VALIDATION_FAILED",
+            &[("code", "ERR_ACTIONS".to_string()), ("reason", e.clone())],
+        );
         let mut trace_val = serde_json::json!({ "trace_id": trace_id, "validated_json": last_plan_json, "error": e, "event": "VALIDATION_FAILED" });
         write_trace(path, &trace_id, &mut trace_val);
         return Err(e);
     }
     let mode_for_update_base = output_format_override
         .filter(|s| !s.is_empty())
-        .or_else(|| if mem.user.output_format.trim().is_empty() { None } else { Some(mem.user.output_format.as_str()) });
+        .or_else(|| {
+            if mem.user.output_format.trim().is_empty() {
+                None
+            } else {
+                Some(mem.user.output_format.as_str())
+            }
+        });
     if mode_for_update_base == Some("apply") {
         if let Err(e) = validate_update_without_base(&last_actions, last_context_for_apply) {
-            log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_UPDATE_WITHOUT_BASE".to_string()), ("reason", e.clone())]);
+            log_llm_event(
+                &trace_id,
+                "VALIDATION_FAILED",
+                &[
+                    ("code", "ERR_UPDATE_WITHOUT_BASE".to_string()),
+                    ("reason", e.clone()),
+                ],
+            );
             let mut trace_val = serde_json::json!({ "trace_id": trace_id, "validated_json": last_plan_json, "error": e, "event": "VALIDATION_FAILED" });
             write_trace(path, &trace_id, &mut trace_val);
             return Err(e);
         }
         if let Err(e) = validate_v2_update_existing_forbidden(project_root, &last_actions) {
-            log_llm_event(&trace_id, "VALIDATION_FAILED", &[("code", "ERR_V2_UPDATE_EXISTING_FORBIDDEN".to_string()), ("reason", e.clone())]);
+            log_llm_event(
+                &trace_id,
+                "VALIDATION_FAILED",
+                &[
+                    ("code", "ERR_V2_UPDATE_EXISTING_FORBIDDEN".to_string()),
+                    ("reason", e.clone()),
+                ],
+            );
             let mut trace_val = serde_json::json!({ "trace_id": trace_id, "validated_json": last_plan_json, "error": e, "event": "VALIDATION_FAILED" });
             write_trace(path, &trace_id, &mut trace_val);
             return Err(e);
@@ -1430,7 +1895,13 @@ pub async fn plan(
 
     let mode_for_plan_json = output_format_override
         .filter(|s| !s.is_empty())
-        .or_else(|| if mem.user.output_format.is_empty() { None } else { Some(mem.user.output_format.as_str()) });
+        .or_else(|| {
+            if mem.user.output_format.is_empty() {
+                None
+            } else {
+                Some(mem.user.output_format.as_str())
+            }
+        });
     let is_plan_mode = mode_for_plan_json == Some("plan");
     let plan_json = is_plan_mode.then_some(last_plan_json.clone());
     let plan_context = is_plan_mode.then_some(last_context_for_return.clone());
@@ -1450,9 +1921,13 @@ pub async fn plan(
     }
     if force_protocol_version == Some(1) {
         trace_val["protocol_attempts"] = serde_json::json!(["v2", "v1"]);
-        trace_val["protocol_fallback_reason"] = serde_json::json!(apply_error_for_repair.as_ref().map(|(c, _)| *c).unwrap_or("unknown"));
+        trace_val["protocol_fallback_reason"] = serde_json::json!(apply_error_for_repair
+            .as_ref()
+            .map(|(c, _)| *c)
+            .unwrap_or("unknown"));
         trace_val["protocol_fallback_attempted"] = serde_json::json!(true);
-        trace_val["protocol_fallback_stage"] = serde_json::json!(apply_error_stage.unwrap_or("apply"));
+        trace_val["protocol_fallback_stage"] =
+            serde_json::json!(apply_error_stage.unwrap_or("apply"));
     }
     if !repair_injected_paths.is_empty() {
         trace_val["repair_injected_sha256"] = serde_json::json!(true);
@@ -1472,8 +1947,22 @@ pub async fn plan(
             trace_val["online_context_truncated"] = serde_json::json!(true);
         }
     }
+    // S3: store origin+pathname only (no query/fragment) for trace privacy
+    if let Some(sources) = online_context_sources {
+        let stripped: Vec<String> = sources
+            .iter()
+            .map(|u| crate::online_research::url_for_trace(u))
+            .collect();
+        trace_val["online_sources"] = serde_json::json!(stripped);
+    }
     if online_context_dropped {
         trace_val["online_context_dropped"] = serde_json::json!(true);
+    }
+    if notes_injected {
+        trace_val["notes_injected"] = serde_json::json!(true);
+        trace_val["notes_count"] = serde_json::json!(notes_count);
+        trace_val["notes_chars"] = serde_json::json!(notes_chars);
+        trace_val["notes_ids"] = serde_json::json!(notes_ids);
     }
     if let Some(ref cs) = last_context_stats {
         trace_val["context_stats"] = serde_json::json!({
@@ -1517,9 +2006,9 @@ pub async fn plan(
 mod tests {
     use super::{
         build_v2_patch_repair_prompt_with_sha, compiled_schema_for_version,
-        extract_files_read_from_plan_context, is_protocol_fallback_applicable, parse_actions_from_json,
-        schema_hash, schema_hash_for_version,
-        validate_actions, validate_update_without_base, validate_v2_update_existing_forbidden,
+        extract_files_read_from_plan_context, is_protocol_fallback_applicable,
+        parse_actions_from_json, schema_hash, schema_hash_for_version, validate_actions,
+        validate_update_without_base, validate_v2_update_existing_forbidden,
         FIX_PLAN_SYSTEM_PROMPT, LLM_PLAN_SCHEMA_VERSION,
     };
     use crate::types::{Action, ActionKind};
@@ -1530,11 +2019,20 @@ mod tests {
     fn test_protocol_fallback_applicable() {
         std::env::set_var("PAPAYU_PROTOCOL_DEFAULT", "2");
         std::env::set_var("PAPAYU_PROTOCOL_FALLBACK_TO_V1", "1");
-        assert!(!is_protocol_fallback_applicable("ERR_PATCH_APPLY_FAILED", 0)); // repair-first
+        assert!(!is_protocol_fallback_applicable(
+            "ERR_PATCH_APPLY_FAILED",
+            0
+        )); // repair-first
         assert!(is_protocol_fallback_applicable("ERR_PATCH_APPLY_FAILED", 1));
         assert!(is_protocol_fallback_applicable("ERR_NON_UTF8_FILE", 0)); // immediate fallback
-        assert!(!is_protocol_fallback_applicable("ERR_V2_UPDATE_EXISTING_FORBIDDEN", 0)); // repair-first
-        assert!(is_protocol_fallback_applicable("ERR_V2_UPDATE_EXISTING_FORBIDDEN", 1));
+        assert!(!is_protocol_fallback_applicable(
+            "ERR_V2_UPDATE_EXISTING_FORBIDDEN",
+            0
+        )); // repair-first
+        assert!(is_protocol_fallback_applicable(
+            "ERR_V2_UPDATE_EXISTING_FORBIDDEN",
+            1
+        ));
         assert!(!is_protocol_fallback_applicable("ERR_BASE_MISMATCH", 0)); // sha repair, not fallback
         std::env::remove_var("PAPAYU_PROTOCOL_DEFAULT");
         std::env::remove_var("PAPAYU_PROTOCOL_FALLBACK_TO_V1");
@@ -1596,6 +2094,7 @@ mod tests {
             content: Some("# Project".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_ok());
     }
@@ -1608,6 +2107,7 @@ mod tests {
             content: Some("x".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1620,6 +2120,7 @@ mod tests {
             content: Some("x".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1632,6 +2133,7 @@ mod tests {
             content: Some("x".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1644,6 +2146,7 @@ mod tests {
             content: Some("x".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1656,6 +2159,7 @@ mod tests {
             content: Some("x".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1668,6 +2172,7 @@ mod tests {
             content: None,
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1680,6 +2185,7 @@ mod tests {
             content: Some("x".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1692,6 +2198,7 @@ mod tests {
             content: Some("fn main() {}".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_ok());
     }
@@ -1705,6 +2212,7 @@ mod tests {
                 content: Some("a".to_string()),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             },
             Action {
                 kind: ActionKind::UpdateFile,
@@ -1712,6 +2220,7 @@ mod tests {
                 content: Some("b".to_string()),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             },
         ];
         assert!(validate_actions(&actions).is_err());
@@ -1726,6 +2235,7 @@ mod tests {
                 content: None,
                 patch: None,
                 base_sha256: None,
+                edits: None,
             },
             Action {
                 kind: ActionKind::UpdateFile,
@@ -1733,6 +2243,7 @@ mod tests {
                 content: Some("b".to_string()),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             },
         ];
         assert!(validate_actions(&actions).is_err());
@@ -1763,6 +2274,7 @@ mod tests {
                 content: Some("new".to_string()),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             },
             Action {
                 kind: ActionKind::UpdateFile,
@@ -1770,6 +2282,7 @@ mod tests {
                 content: Some("updated".to_string()),
                 patch: None,
                 base_sha256: None,
+                edits: None,
             },
         ];
         assert!(validate_update_without_base(&actions, Some(ctx)).is_ok());
@@ -1784,6 +2297,7 @@ mod tests {
             content: Some("new".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_update_without_base(&actions, Some(ctx)).is_err());
     }
@@ -1796,6 +2310,7 @@ mod tests {
             content: Some("x".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1808,6 +2323,7 @@ mod tests {
             content: None,
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         assert!(validate_actions(&actions).is_err());
     }
@@ -1845,6 +2361,7 @@ mod tests {
             content: Some("fn main() { println!(\"x\"); }\n".to_string()),
             patch: None,
             base_sha256: None,
+            edits: None,
         }];
         let r = validate_v2_update_existing_forbidden(root, &actions);
         std::env::remove_var("PAPAYU_PROTOCOL_VERSION");
@@ -1953,22 +2470,23 @@ mod tests {
                 "{}: schema_version",
                 name
             );
-            let sh = v.get("protocol")
+            let sh = v
+                .get("protocol")
                 .and_then(|p| p.get("schema_hash"))
                 .and_then(|x| x.as_str())
                 .unwrap_or("");
             assert_eq!(sh, expected_schema_hash, "{}: schema_hash", name);
 
-            let validated = v.get("result")
+            let validated = v
+                .get("result")
                 .and_then(|r| r.get("validated_json"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
             if validated.is_null() {
                 continue;
             }
-            super::validate_json_against_schema(&validated).unwrap_or_else(|e| {
-                panic!("{}: schema validation: {}", name, e)
-            });
+            super::validate_json_against_schema(&validated)
+                .unwrap_or_else(|e| panic!("{}: schema validation: {}", name, e));
 
             let validated_str = serde_json::to_string(&validated).unwrap();
             let parsed = super::parse_plan_response(&validated_str)
@@ -1986,7 +2504,8 @@ mod tests {
                 );
             }
 
-            let mode = v.get("request")
+            let mode = v
+                .get("request")
                 .and_then(|r| r.get("mode"))
                 .and_then(|x| x.as_str())
                 .unwrap_or("");
@@ -2101,6 +2620,108 @@ mod tests {
                     "{}: apply with empty actions requires NO_CHANGES: prefix in summary",
                     name
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn golden_traces_v3_validate() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/golden_traces/v3");
+        if !dir.exists() {
+            return;
+        }
+        let expected_schema_hash = schema_hash_for_version(3);
+        let v3_schema = compiled_schema_for_version(3).expect("v3 schema must compile");
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            let s = fs::read_to_string(&path).unwrap_or_else(|_| panic!("read {}", name));
+            let v: serde_json::Value =
+                serde_json::from_str(&s).unwrap_or_else(|e| panic!("{}: json {}", name, e));
+
+            assert_eq!(
+                v.get("protocol")
+                    .and_then(|p| p.get("schema_version"))
+                    .and_then(|x| x.as_u64()),
+                Some(3),
+                "{}: schema_version must be 3",
+                name
+            );
+            let sh = v
+                .get("protocol")
+                .and_then(|p| p.get("schema_hash"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            assert_eq!(sh, expected_schema_hash, "{}: schema_hash", name);
+
+            let validated = v
+                .get("result")
+                .and_then(|r| r.get("validated_json"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if validated.is_null() {
+                continue;
+            }
+            v3_schema
+                .validate(&validated)
+                .map_err(|errs| {
+                    let msgs: Vec<String> = errs.map(|e| e.to_string()).collect();
+                    format!("{}: v3 schema validation: {}", name, msgs.join("; "))
+                })
+                .unwrap();
+
+            let validated_str = serde_json::to_string(&validated).unwrap();
+            let parsed = super::parse_plan_response(&validated_str)
+                .unwrap_or_else(|e| panic!("{}: parse validated_json: {}", name, e));
+
+            if v.get("result")
+                .and_then(|r| r.get("validation_outcome"))
+                .and_then(|x| x.as_str())
+                == Some("ok")
+            {
+                assert!(
+                    validate_actions(&parsed.actions).is_ok(),
+                    "{}: validate_actions",
+                    name
+                );
+            }
+
+            let mode = v
+                .get("request")
+                .and_then(|r| r.get("mode"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if mode == "apply" && parsed.actions.is_empty() {
+                let summary = validated
+                    .get("summary")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                assert!(
+                    summary.starts_with("NO_CHANGES:"),
+                    "{}: apply with empty actions requires NO_CHANGES: prefix in summary",
+                    name
+                );
+            }
+
+            for a in &parsed.actions {
+                if a.kind == ActionKind::EditFile {
+                    assert!(
+                        a.base_sha256
+                            .as_ref()
+                            .map(|s| s.len() == 64)
+                            .unwrap_or(false),
+                        "{}: EDIT_FILE must have base_sha256",
+                        name
+                    );
+                    assert!(
+                        a.edits.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
+                        "{}: EDIT_FILE must have non-empty edits",
+                        name
+                    );
+                }
             }
         }
     }

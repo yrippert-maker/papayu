@@ -8,6 +8,7 @@ mod generate_actions;
 mod generate_actions_from_report;
 mod get_project_profile;
 mod llm_planner;
+mod multi_provider;
 mod preview_actions;
 mod project_content;
 mod projects;
@@ -15,6 +16,8 @@ mod propose_actions;
 mod redo_last;
 mod run_batch;
 mod settings_export;
+pub mod design_trends;
+mod trace_fields;
 mod trends;
 mod undo_last;
 mod undo_last_tx;
@@ -22,21 +25,24 @@ mod undo_status;
 mod weekly_report;
 
 pub use agentic_run::agentic_run;
-pub use get_project_profile::get_project_profile;
-pub use projects::{add_project, append_session_event, get_project_settings, list_projects, list_sessions, set_project_settings};
 pub use analyze_project::analyze_project;
 pub use apply_actions::apply_actions;
 pub use apply_actions_tx::apply_actions_tx;
+pub use folder_links::{load_folder_links, save_folder_links, FolderLinks};
 pub use generate_actions::generate_actions;
 pub use generate_actions_from_report::generate_actions_from_report;
-pub use propose_actions::propose_actions;
-pub use folder_links::{load_folder_links, save_folder_links, FolderLinks};
+pub use get_project_profile::get_project_profile;
 pub use preview_actions::preview_actions;
+pub use projects::{
+    add_project, append_session_event, apply_project_setting_cmd, get_project_settings,
+    list_projects, list_sessions, set_project_settings,
+};
+pub use propose_actions::propose_actions;
 pub use redo_last::redo_last;
 pub use run_batch::run_batch;
+pub use settings_export::{export_settings, import_settings};
 pub use trends::{fetch_trends_recommendations, get_trends_recommendations};
 pub use undo_last::{get_undo_redo_state_cmd, undo_available, undo_last};
 pub use undo_last_tx::undo_last_tx;
 pub use undo_status::undo_status;
-pub use settings_export::{export_settings, import_settings};
 pub use weekly_report::{analyze_weekly_reports, save_report_to_file, WeeklyReportResult};

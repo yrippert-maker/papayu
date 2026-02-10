@@ -1,0 +1,58 @@
+{
+  "protocol": {
+    "schema_version": 3,
+    "schema_hash": "10ece82f5e140c9cc5c5f0dd72757fba80c8f86034263d85716ae461c2e679ec"
+  },
+  "request": {
+    "mode": "apply",
+    "input_chars": 15000,
+    "token_budget": 4096,
+    "strict_json": true,
+    "provider": "openai",
+    "model": "gpt-4o-mini"
+  },
+  "context": {
+    "context_stats": {
+      "context_files_count": 2,
+      "context_files_dropped_count": 0,
+      "context_total_chars": 3600,
+      "context_logs_chars": 0,
+      "context_truncated_files_count": 0
+    },
+    "cache_stats": {
+      "env_hits": 0,
+      "env_misses": 1,
+      "logs_hits": 0,
+      "logs_misses": 0,
+      "read_hits": 1,
+      "read_misses": 0,
+      "search_hits": 0,
+      "search_misses": 0,
+      "hit_rate": 0.5
+    }
+  },
+  "result": {
+    "validated_json": {
+      "actions": [
+        {
+          "kind": "EDIT_FILE",
+          "path": "src/main.rs",
+          "base_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "edits": [
+            {
+              "op": "replace",
+              "anchor": "println!",
+              "before": "println!(\"bug\");",
+              "after": "println!(\"fix\");",
+              "occurrence": 1,
+              "context_lines": 2
+            }
+          ]
+        }
+      ],
+      "summary": "Применён EDIT_FILE для main.rs."
+    },
+    "validation_outcome": "ok",
+    "error_code": null
+  }
+}

@@ -11,12 +11,20 @@ use crate::types::UndoStatus;
 pub async fn undo_status(app: AppHandle) -> UndoStatus {
     let base: PathBuf = match app.path().app_data_dir() {
         Ok(v) => v,
-        Err(_) => return UndoStatus { available: false, tx_id: None },
+        Err(_) => {
+            return UndoStatus {
+                available: false,
+                tx_id: None,
+            }
+        }
     };
 
     let dir = base.join("history").join("tx");
     let Ok(rd) = fs::read_dir(&dir) else {
-        return UndoStatus { available: false, tx_id: None };
+        return UndoStatus {
+            available: false,
+            tx_id: None,
+        };
     };
 
     let last = rd
@@ -31,6 +39,9 @@ pub async fn undo_status(app: AppHandle) -> UndoStatus {
                 tx_id: Some(name),
             }
         }
-        None => UndoStatus { available: false, tx_id: None },
+        None => UndoStatus {
+            available: false,
+            tx_id: None,
+        },
     }
 }

@@ -6,6 +6,20 @@
 
 ---
 
+## [2.4.5] — 2025-01-31
+
+### Добавлено
+
+- **Distill Online Research → Project Note:** кнопка «Save as Project Note» в блоке Online Research (Задачи) — сохраняет результат online research в domain notes проекта.
+- **Контекст v3:** FILE-блоки при protocol_version=3 теперь включают sha256 (base_sha256 для EDIT_FILE). Исправлено: ранее sha256 добавлялся только для v2.
+- **C1–C3 Protocol v3:** schema (after minLength=0, maxLength 50k для before/after), валидатор (after может быть пустым для delete), repair-промпты для ERR_EDIT_ANCHOR_NOT_FOUND / ERR_EDIT_BEFORE_NOT_FOUND / ERR_EDIT_AMBIGUOUS, golden traces v3 + CI. Обновлён schema_hash в fixtures.
+
+### Обновлено
+
+- `docs/IMPLEMENTATION_STATUS_ABC.md`: A4, B3, C отмечены как реализованные.
+
+---
+
 ## [2.4.4] — 2025-01-31
 
 ### Protocol stability (v1)

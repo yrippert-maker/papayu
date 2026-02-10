@@ -44,25 +44,16 @@ fn emit_progress(app: &AppHandle, msg: &str) {
     let _ = app.emit(PROGRESS_EVENT, msg);
 }
 
-fn write_tx_record(
-    app: &AppHandle,
-    tx_id: &str,
-    record: &serde_json::Value,
-) -> Result<(), String> {
+fn write_tx_record(app: &AppHandle, tx_id: &str, record: &serde_json::Value) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let tx_dir = dir.join("history").join("tx");
     fs::create_dir_all(&tx_dir).map_err(|e| e.to_string())?;
     let p = tx_dir.join(format!("{tx_id}.json"));
-    let bytes =
-        serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
     fs::write(&p, bytes).map_err(|e| e.to_string())
 }
 
-fn copy_dir_recursive(
-    src: &Path,
-    dst: &Path,
-    exclude: &[&str],
-) -> Result<(), String> {
+fn copy_dir_recursive(src: &Path, dst: &Path, exclude: &[&str]) -> Result<(), String> {
     if exclude
         .iter()
         .any(|x| src.file_name().map(|n| n == *x).unwrap_or(false))
@@ -85,11 +76,7 @@ fn copy_dir_recursive(
     Ok(())
 }
 
-fn snapshot_project(
-    app: &AppHandle,
-    project_root: &Path,
-    tx_id: &str,
-) -> Result<PathBuf, String> {
+fn snapshot_project(app: &AppHandle, project_root: &Path, tx_id: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let snap_dir = dir.join("history").join("snapshots").join(tx_id);
     if snap_dir.exists() {
@@ -98,7 +85,14 @@ fn snapshot_project(
     fs::create_dir_all(&snap_dir).map_err(|e| e.to_string())?;
 
     let exclude = [
-        ".git", "node_modules", "dist", "build", ".next", "target", ".cache", "coverage",
+        ".git",
+        "node_modules",
+        "dist",
+        "build",
+        ".next",
+        "target",
+        ".cache",
+        "coverage",
     ];
     copy_dir_recursive(project_root, &snap_dir, &exclude)?;
     Ok(snap_dir)
@@ -106,7 +100,14 @@ fn snapshot_project(
 
 fn restore_snapshot(project_root: &Path, snap_dir: &Path) -> Result<(), String> {
     let exclude = [
-        ".git", "node_modules", "dist", "build", ".next", "target", ".cache", "coverage",
+        ".git",
+        "node_modules",
+        "dist",
+        "build",
+        ".next",
+        "target",
+        ".cache",
+        "coverage",
     ];
 
     for entry in fs::read_dir(project_root).map_err(|e| e.to_string())? {
@@ -129,7 +130,6 @@ fn restore_snapshot(project_root: &Path, snap_dir: &Path) -> Result<(), String> 
     copy_dir_recursive(snap_dir, project_root, &[])?;
     Ok(())
 }
-
 
 fn run_cmd_allowlisted(
     cwd: &Path,
@@ -363,7 +363,10 @@ pub async fn apply_actions_tx(
                 .iter()
                 .any(|c| error_code == *c)
                 .then(|| "apply".to_string());
-            eprintln!("[APPLY_ROLLBACK] tx_id={} path={} reason={}", tx_id, path, e);
+            eprintln!(
+                "[APPLY_ROLLBACK] tx_id={} path={} reason={}",
+                tx_id, path, e
+            );
             return ApplyTxResult {
                 ok: false,
                 tx_id: Some(tx_id.clone()),
@@ -386,7 +389,10 @@ pub async fn apply_actions_tx(
         if any_fail {
             emit_progress(&app, "Обнаружены ошибки. Откатываю изменения…");
             let _ = restore_snapshot(&root, &snap_dir);
-            eprintln!("[APPLY_ROLLBACK] tx_id={} path={} reason=autoCheck_failed", tx_id, path);
+            eprintln!(
+                "[APPLY_ROLLBACK] tx_id={} path={} reason=autoCheck_failed",
+                tx_id, path
+            );
 
             let record = json!({
                 "txId": tx_id,
@@ -417,7 +423,12 @@ pub async fn apply_actions_tx(
     });
     let _ = write_tx_record(&app, &tx_id, &record);
 
-    eprintln!("[APPLY_SUCCESS] tx_id={} path={} actions={}", tx_id, path, actions.len());
+    eprintln!(
+        "[APPLY_SUCCESS] tx_id={} path={} actions={}",
+        tx_id,
+        path,
+        actions.len()
+    );
 
     ApplyTxResult {
         ok: true,
@@ -434,27 +445,49 @@ pub async fn apply_actions_tx(
 fn is_protected_file(p: &str) -> bool {
     let lower = p.to_lowercase().replace('\\', "/");
     // Секреты и ключи (denylist)
-    if lower == ".env" || lower.ends_with("/.env") { return true; }
-    if lower.ends_with(".pem") || lower.ends_with(".key") || lower.ends_with(".p12") { return true; }
-    if lower.contains("id_rsa") { return true; }
-    if lower.contains("/secrets/") || lower.starts_with("secrets/") { return true; }
+    if lower == ".env" || lower.ends_with("/.env") {
+        return true;
+    }
+    if lower.ends_with(".pem") || lower.ends_with(".key") || lower.ends_with(".p12") {
+        return true;
+    }
+    if lower.contains("id_rsa") {
+        return true;
+    }
+    if lower.contains("/secrets/") || lower.starts_with("secrets/") {
+        return true;
+    }
     // Lock-файлы
-    if lower.ends_with("cargo.lock") { return true; }
-    if lower.ends_with("package-lock.json") { return true; }
-    if lower.ends_with("pnpm-lock.yaml") { return true; }
-    if lower.ends_with("yarn.lock") { return true; }
-    if lower.ends_with("composer.lock") { return true; }
-    if lower.ends_with("poetry.lock") { return true; }
-    if lower.ends_with("pipfile.lock") { return true; }
+    if lower.ends_with("cargo.lock") {
+        return true;
+    }
+    if lower.ends_with("package-lock.json") {
+        return true;
+    }
+    if lower.ends_with("pnpm-lock.yaml") {
+        return true;
+    }
+    if lower.ends_with("yarn.lock") {
+        return true;
+    }
+    if lower.ends_with("composer.lock") {
+        return true;
+    }
+    if lower.ends_with("poetry.lock") {
+        return true;
+    }
+    if lower.ends_with("pipfile.lock") {
+        return true;
+    }
     let bin_ext = [
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-        ".pdf", ".zip", ".7z", ".rar", ".dmg", ".pkg",
-        ".exe", ".dll", ".so", ".dylib", ".bin",
-        ".mp3", ".mp4", ".mov", ".avi",
-        ".wasm", ".class",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".zip", ".7z", ".rar", ".dmg",
+        ".pkg", ".exe", ".dll", ".so", ".dylib", ".bin", ".mp3", ".mp4", ".mov", ".avi", ".wasm",
+        ".class",
     ];
     for ext in bin_ext {
-        if lower.ends_with(ext) { return true; }
+        if lower.ends_with(ext) {
+            return true;
+        }
     }
     false
 }
@@ -462,9 +495,31 @@ fn is_protected_file(p: &str) -> bool {
 fn is_text_allowed(p: &str) -> bool {
     let lower = p.to_lowercase();
     let ok_ext = [
-        ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".toml", ".yaml", ".yml",
-        ".rs", ".py", ".go", ".java", ".kt", ".c", ".cpp", ".h", ".hpp",
-        ".css", ".scss", ".html", ".env", ".gitignore", ".editorconfig",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".json",
+        ".md",
+        ".txt",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".rs",
+        ".py",
+        ".go",
+        ".java",
+        ".kt",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".css",
+        ".scss",
+        ".html",
+        ".env",
+        ".gitignore",
+        ".editorconfig",
     ];
     ok_ext.iter().any(|e| lower.ends_with(e)) || !lower.contains('.')
 }

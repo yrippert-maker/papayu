@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+/// v3 EDIT_FILE: одна операция replace (anchor, before, after).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditOp {
+    pub op: String,
+    pub anchor: String,
+    pub before: String,
+    pub after: String,
+    #[serde(default)]
+    pub occurrence: u32,
+    #[serde(default)]
+    pub context_lines: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Action {
     pub kind: ActionKind,
@@ -9,9 +22,12 @@ pub struct Action {
     /// v2 PATCH_FILE: unified diff
     #[serde(skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
-    /// v2 PATCH_FILE: sha256 hex текущей версии файла
+    /// v2 PATCH_FILE / v3 EDIT_FILE: sha256 hex текущей версии файла
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_sha256: Option<String>,
+    /// v3 EDIT_FILE: список правок (replace по anchor/before/after)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edits: Option<Vec<EditOp>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -21,6 +37,7 @@ pub enum ActionKind {
     CreateDir,
     UpdateFile,
     PatchFile,
+    EditFile,
     DeleteFile,
     DeleteDir,
 }
@@ -56,7 +73,7 @@ pub struct ApplyResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxTouchedItem {
     pub rel_path: String,
-    pub kind: String,   // "file" | "dir"
+    pub kind: String, // "file" | "dir"
     pub existed: bool,
     pub bytes: u64,
 }
@@ -204,7 +221,7 @@ pub struct Recommendation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectSignal {
     pub category: String, // "security" | "quality" | "structure"
-    pub level: String,   // "warn" | "high" | "critical"
+    pub level: String,    // "warn" | "high" | "critical"
 }
 
 /// v2.9.1: группа действий (readme, gitignore, tests, …)
@@ -486,12 +503,14 @@ pub struct ProjectSettings {
     pub max_actions: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub goal_template: Option<String>,
+    /// B3: auto-use online research as context (per project)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_auto_use_as_context: Option<bool>,
 }
 
 // --- v2.4.3: detected profile (by path) ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectType {
     ReactVite,

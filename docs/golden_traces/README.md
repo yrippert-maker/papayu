@@ -14,9 +14,11 @@ docs/golden_traces/
     ...
   v2/                  # Protocol v2 fixtures (PATCH_FILE, base_sha256)
     001_fix_bug_plan.json
-    002_fix_bug_apply_patch.json
-    003_base_mismatch_block.json
-    004_patch_apply_failed_block.json
+  v3/                  # Protocol v3 fixtures (EDIT_FILE, anchor/before/after)
+    001_fix_bug_plan.json
+    002_fix_bug_apply_edit.json
+    003_edit_anchor_not_found_block.json
+    004_edit_base_mismatch_block.json
     005_no_changes_apply.json
 ```
 
@@ -40,10 +42,14 @@ cargo run --bin trace_to_golden -- <path/to/trace.json> [output_path]
 
 Читает trace из `.papa-yu/traces/<trace_id>.json` или из файла. Пишет в `docs/golden_traces/v1/`.
 
+## Отладка EDIT_FILE (v3)
+
+Чеклист для E2E проверки v3 EDIT_FILE: `docs/EDIT_FILE_DEBUG.md`.
+
 ## Регрессионный тест
 
 ```bash
-cargo test golden_traces_v1_validate golden_traces_v2_validate
+cargo test golden_traces_v1_validate golden_traces_v2_validate golden_traces_v3_validate
 # или
 make test-protocol
 npm run test-protocol
