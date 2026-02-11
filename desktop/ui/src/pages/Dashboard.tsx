@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ROUTES } from '../config/routes';
-import { eventBus, Events } from '../lib/event-bus';
 import { useAppStore } from '../store/app-store';
 import { animateCardsStagger, animateFadeInUp } from '../lib/anime-utils';
 import { Shield, FileText, Lock, CheckCircle2, AlertTriangle, ArrowRight, Sparkles, Info } from 'lucide-react';
@@ -12,7 +11,6 @@ export function Dashboard() {
   const navigate = useNavigate();
   const lastReport = useAppStore((s) => s.lastReport);
   const auditEvents = useAppStore((s) => s.auditEvents);
-  const addAuditEvent = useAppStore((s) => s.addAuditEvent);
 
   const hasData = !!lastReport;
   const findings = lastReport?.findings ?? [];
@@ -27,10 +25,6 @@ export function Dashboard() {
   const secretsStatus = hasData && secretFindings.length === 0;
 
   const handleCardClick = (path: string) => {
-    try {
-      eventBus.emit(Events.NAVIGATE, { path });
-      addAuditEvent({ id: `nav-${Date.now()}`, event: 'navigation', timestamp: new Date().toISOString(), actor: 'user' });
-    } catch { /* ignored */ }
     navigate(path);
   };
 
