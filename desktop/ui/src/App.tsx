@@ -7,6 +7,7 @@ import { AuditLogger } from './pages/AuditLogger';
 import { SecretsGuard } from './pages/SecretsGuard';
 import { Updates } from './pages/Updates';
 import { Diagnostics } from './pages/Diagnostics';
+import { LlmSettingsPage } from './pages/LlmSettings';
 import { Layout } from './components/layout/Layout';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ErrorDisplay } from './components/ErrorDisplay';
@@ -39,6 +40,7 @@ function App() {
             <Route path={ROUTES.SECRETS_GUARD.path} element={<SecretsGuard />} />
             <Route path={ROUTES.UPDATES.path} element={<Updates />} />
             <Route path={ROUTES.DIAGNOSTICS.path} element={<Diagnostics />} />
+            <Route path={ROUTES.LLM_SETTINGS.path} element={<LlmSettingsPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>

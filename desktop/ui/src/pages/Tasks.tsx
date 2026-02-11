@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { analyzeProject, type AnalyzeReport, type Action, type ApplyResult, type UndoResult, type PreviewResult, type DiffItem } from '../lib/analyze';
+import { analyzeProject, askLlm, type AnalyzeReport, type Action, type ApplyResult, type UndoResult, type PreviewResult, type DiffItem, type LlmSettings, DEFAULT_LLM_SETTINGS } from '../lib/analyze';
 import { animateFadeInUp } from '../lib/anime-utils';
 import { useAppStore } from '../store/app-store';
 
@@ -64,6 +64,62 @@ export function Tasks() {
   const messagesListRef = useRef<HTMLDivElement>(null);
   const storeSetLastReport = useAppStore((s) => s.setLastReport);
   const addAuditEvent = useAppStore((s) => s.addAuditEvent);
+  const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
+
+  const loadLlmSettings = (): LlmSettings => {
+    try {
+      const raw = localStorage.getItem('papayu_llm_settings');
+      if (raw) return { ...DEFAULT_LLM_SETTINGS, ...JSON.parse(raw) };
+    } catch { /* ignored */ }
+    return DEFAULT_LLM_SETTINGS;
+  };
+
+  const handleAiAnalysis = async (report: AnalyzeReport) => {
+    const settings = loadLlmSettings();
+    if (!settings.apiKey && settings.provider !== 'ollama') {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'system', text: '⚠️ API-ключ не настроен. Перейдите в Настройки LLM (🧠) в боковом меню.' },
+      ]);
+      return;
+    }
+
+    setIsAiAnalyzing(true);
+    setMessages((prev) => [...prev, { role: 'system', text: '🤖 AI анализирует проект...' }]);
+
+    try {
+      const resp = await askLlm(
+        settings,
+        report.llm_context,
+        `Проанализируй проект "${report.path}" и дай подробный аудит. Найдено ${report.findings.length} проблем, ${report.recommendations.length} рекомендаций. Контекст уже передан в системном промпте.`
+      );
+
+      if (resp.ok) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', text: `🤖 **AI-аудит** (${resp.model}):\n\n${resp.content}` },
+        ]);
+        addAuditEvent({
+          id: `ai-${Date.now()}`,
+          event: 'ai_analysis',
+          timestamp: new Date().toISOString(),
+          actor: 'ai',
+          metadata: { model: resp.model, tokens: resp.usage?.total_tokens ?? 0 },
+        });
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'system', text: `❌ AI ошибка: ${resp.error}` },
+        ]);
+      }
+    } catch (e) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'system', text: `❌ Ошибка соединения: ${e}` },
+      ]);
+    }
+    setIsAiAnalyzing(false);
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -547,6 +603,8 @@ export function Tasks() {
                         onApplyPending={handleApplyPending}
                         onCancelPending={handleCancelPending}
                         onUndo={handleUndoLast}
+                        onAiAnalysis={handleAiAnalysis}
+                        isAiAnalyzing={isAiAnalyzing}
                       />
                     )}
                   </div>
@@ -726,6 +784,8 @@ function ReportBlock({
   onApplyPending,
   onCancelPending,
   onUndo,
+  onAiAnalysis,
+  isAiAnalyzing,
 }: {
   report: AnalyzeReport;
   error?: string;
@@ -741,6 +801,8 @@ function ReportBlock({
   onApplyPending: () => void;
   onCancelPending: () => void;
   onUndo: (projectPath: string) => void;
+  onAiAnalysis?: (report: AnalyzeReport) => void;
+  isAiAnalyzing?: boolean;
 }) {
   if (error) {
     return <div className="text-sm text-destructive">Ошибка: {error}</div>;
@@ -874,7 +936,18 @@ function ReportBlock({
               </div>
             </div>
           )}
-          <div className="flex gap-2 mt-2">
+          <div className="flex gap-2 mt-2 flex-wrap">
+            {isCurrentReport && onAiAnalysis && (
+              <button
+                type="button"
+                onClick={() => onAiAnalysis(r)}
+                disabled={isAiAnalyzing}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              >
+                <Bot className="w-4 h-4" />
+                {isAiAnalyzing ? 'AI анализирует...' : 'AI Анализ'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onDownload(r)}

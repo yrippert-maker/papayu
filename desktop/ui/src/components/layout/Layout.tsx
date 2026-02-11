@@ -4,7 +4,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { ROUTES } from '../../config/routes';
 import { eventBus, Events } from '../../lib/event-bus';
 import { animateLogo, animateStaggerIn } from '../../lib/anime-utils';
-import { Search, LayoutDashboard, Download, Settings, Shield, FileText, Lock } from 'lucide-react';
+import { Search, LayoutDashboard, Download, Settings, Shield, FileText, Lock, Brain } from 'lucide-react';
 
 interface LayoutProps {
   children: ReactNode;
@@ -18,6 +18,7 @@ const NAV_ICONS: Record<string, typeof LayoutDashboard> = {
   [ROUTES.SECRETS_GUARD.path]: Lock,
   [ROUTES.UPDATES.path]: Download,
   [ROUTES.DIAGNOSTICS.path]: Settings,
+  [ROUTES.LLM_SETTINGS.path]: Brain,
 };
 
 async function checkAndInstallUpdate(): Promise<{ ok: boolean; message: string }> {
@@ -74,6 +75,7 @@ export function Layout({ children }: LayoutProps) {
   const navItems = [
     ROUTES.TASKS,
     ROUTES.CONTROL_PANEL,
+    ROUTES.LLM_SETTINGS,
     ROUTES.UPDATES,
     ROUTES.DIAGNOSTICS,
   ].map((r) => ({ path: r.path, name: r.name, icon: NAV_ICONS[r.path] ?? FileText }));

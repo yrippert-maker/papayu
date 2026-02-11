@@ -107,3 +107,83 @@ export interface AnalyzeReport {
 export async function analyzeProject(path: string): Promise<AnalyzeReport> {
   return invoke<AnalyzeReport>('analyze_project', { path });
 }
+
+// ---- LLM Integration ----
+
+export interface LlmRequest {
+  provider: string;       // "openai" | "anthropic" | "ollama"
+  model: string;
+  api_key?: string | null;
+  base_url?: string | null;
+  context: string;        // JSON string of llm_context
+  prompt: string;
+  max_tokens?: number | null;
+}
+
+export interface LlmResponse {
+  ok: boolean;
+  content: string;
+  model: string;
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
+  error?: string | null;
+}
+
+export interface LlmSettings {
+  provider: string;
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+}
+
+export const DEFAULT_LLM_SETTINGS: LlmSettings = {
+  provider: 'openai',
+  model: 'gpt-4o-mini',
+  apiKey: '',
+  baseUrl: '',
+};
+
+export const LLM_MODELS: Record<string, { label: string; models: { value: string; label: string }[] }> = {
+  openai: {
+    label: 'OpenAI',
+    models: [
+      { value: 'gpt-4o-mini', label: 'GPT-4o Mini (дешёвый, быстрый)' },
+      { value: 'gpt-4o', label: 'GPT-4o (мощный)' },
+      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+      { value: 'gpt-4.1', label: 'GPT-4.1' },
+    ],
+  },
+  anthropic: {
+    label: 'Anthropic',
+    models: [
+      { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+      { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (быстрый)' },
+    ],
+  },
+  ollama: {
+    label: 'Ollama (локальный)',
+    models: [
+      { value: 'llama3.1', label: 'Llama 3.1' },
+      { value: 'mistral', label: 'Mistral' },
+      { value: 'codellama', label: 'Code Llama' },
+      { value: 'qwen2.5-coder', label: 'Qwen 2.5 Coder' },
+    ],
+  },
+};
+
+export async function askLlm(
+  settings: LlmSettings,
+  context: LlmContext,
+  prompt: string,
+): Promise<LlmResponse> {
+  return invoke<LlmResponse>('ask_llm', {
+    request: {
+      provider: settings.provider,
+      model: settings.model,
+      api_key: settings.apiKey || null,
+      base_url: settings.baseUrl || null,
+      context: JSON.stringify(context),
+      prompt,
+      max_tokens: 2048,
+    },
+  });
+}

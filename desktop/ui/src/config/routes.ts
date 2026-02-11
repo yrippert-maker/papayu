@@ -13,4 +13,5 @@ export const ROUTES: Record<string, RouteConfig> = {
   SECRETS_GUARD: { path: '/secrets', name: 'Секреты', component: 'SecretsGuard', description: 'Защита от утечек' },
   UPDATES: { path: '/updates', name: 'Обновления', component: 'Updates', description: 'Проверка обновлений' },
   DIAGNOSTICS: { path: '/diagnostics', name: 'Диагностика', component: 'Diagnostics', description: 'Версии и логи' },
+  LLM_SETTINGS: { path: '/llm-settings', name: 'Настройки LLM', component: 'LlmSettings', description: 'Провайдер, модель, API-ключ' },
 };
