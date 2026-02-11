@@ -68,7 +68,7 @@ export function Layout({ children }: LayoutProps) {
     try {
       eventBus.emit(Events.NAVIGATE, { path });
       eventBus.emit(Events.ROUTE_CHANGED, { path });
-    } catch (_) {}
+    } catch { /* ignored */ }
   };
 
   const navItems = [

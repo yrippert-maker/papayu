@@ -19,13 +19,13 @@ export function Diagnostics() {
       try {
         const info = await invoke<AppInfo>('get_app_info');
         setAppInfo(info);
-      } catch (_) {
+      } catch {
         setAppInfo(null);
       }
       try {
         const v = await getVersion();
         setTauriVersion(v);
-      } catch (_) {}
+      } catch { /* ignored */ }
     })();
   }, []);
 

@@ -30,7 +30,7 @@ export function Dashboard() {
     try {
       eventBus.emit(Events.NAVIGATE, { path });
       addAuditEvent({ id: `nav-${Date.now()}`, event: 'navigation', timestamp: new Date().toISOString(), actor: 'user' });
-    } catch (_) {}
+    } catch { /* ignored */ }
     navigate(path);
   };
 

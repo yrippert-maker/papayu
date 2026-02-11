@@ -19,7 +19,7 @@ function RouteTracker() {
   useEffect(() => {
     try {
       useAppStore.getState().setCurrentRoute(location.pathname);
-    } catch (_) {}
+    } catch { /* ignored */ }
   }, [location.pathname]);
   return null;
 }
