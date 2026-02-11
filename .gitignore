@@ -1,44 +1,19 @@
-# Секреты — не коммитить
+# env
 .env
 .env.*
-!.env.example
-*.key
-*.pem
-
-# Node.js
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Vite / Build
-dist/
-*.local
-
-# Rust / Tauri
-src-tauri/target/
-**/*.rs.bk
-Cargo.lock
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
+*.env
 
 # OS
 .DS_Store
-Thumbs.db
+
+# Node
+node_modules
+dist
+build
+
+# Rust
+/desktop/src-tauri/target
+/desktop/src-tauri/.cargo
 
 # Logs
 *.log
-
-# TypeScript cache
-*.tsbuildinfo
-tsconfig.tsbuildinfo
-tsconfig.node.tsbuildinfo
-
-# Временные файлы
-*.tmp
-*.temp

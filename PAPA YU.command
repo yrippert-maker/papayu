@@ -1,7 +1,11 @@
 #!/bin/bash
-# PAPA YU — запуск приложения (двойной клик). Сборка не выполняется.
+# PAPA YU — запуск приложения (основная кнопка)
+# Двойной клик: сразу запускает программу. Сборка не выполняется.
+# Путь к .app вычисляется от каталога, в котором лежит этот скрипт (устойчиво к текущей директории).
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUNDLE_DIR="$SCRIPT_DIR/src-tauri/target/release/bundle/macos"
+ROOT="$SCRIPT_DIR"
+BUNDLE_DIR="$ROOT/desktop/src-tauri/target/release/bundle/macos"
 
 find_app() {
   [ -d "$BUNDLE_DIR/PAPA YU.app" ] && echo "$BUNDLE_DIR/PAPA YU.app" && return
@@ -19,7 +23,8 @@ fi
 
 echo ""
 echo "  PAPA YU не найден."
-echo "  Для первой сборки запустите: «PAPA YU — Сборка и запуск.command»"
+echo "  Для первой сборки откройте:"
+echo "  «PAPA YU — Сборка и запуск.command»"
 echo ""
 read -n 1 -s -r -p "  Нажмите любую клавишу..."
 exit 1
