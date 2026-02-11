@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Shield, ArrowLeft, CheckCircle2, AlertTriangle, FileText, Info } from 'lucide-react';
+import { Shield, ArrowLeft, CheckCircle2, AlertTriangle, Info } from 'lucide-react';
 import { useAppStore } from '../store/app-store';
 
 export function PolicyEngine() {
