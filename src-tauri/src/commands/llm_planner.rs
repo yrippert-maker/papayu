@@ -12,7 +12,7 @@
 
 use crate::context;
 use crate::memory;
-use crate::types::{Action, ActionKind, AgentPlan};
+use crate::types::{Action, ActionKind, AgentPlan, AnalyzeReport};
 use jsonschema::JSONSchema;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -516,6 +516,7 @@ fn build_prompt(
 Путь проекта: {}
 Цель пользователя: {}
 {}
+Важно: предложи исправления в первую очередь по находкам (findings) из отчёта — каждая находка может быть закрыта одним или несколькими действиями (CREATE_FILE, PATCH_FILE и т.д.). В отчёте ниже есть массив findings с полями title, details, path — используй их как приоритет.
 Отчёт анализа (JSON):
 {}
 {}
@@ -1178,6 +1179,91 @@ fn parse_plan_response(json_str: &str) -> Result<PlanParseResult, String> {
         summary_override,
         context_requests,
     })
+}
+
+/// Контекст для генерации narrative: путь, находки, число действий (без вызова LLM).
+pub fn build_narrative_context(report: &AnalyzeReport) -> String {
+    let mut parts = vec![
+        format!("Проект: {}", report.path),
+        format!("Находок: {}", report.findings.len()),
+        format!("Доступных исправлений: {}", report.actions.len()),
+    ];
+    if !report.findings.is_empty() {
+        let list: Vec<String> = report
+            .findings
+            .iter()
+            .take(10)
+            .map(|f| format!("- {}: {}", f.title, f.details))
+            .collect();
+        parts.push("Находки:".to_string());
+        parts.push(list.join("\n"));
+    }
+    parts.join("\n")
+}
+
+/// Запрашивает у LLM краткий narrative (2–4 предложения) по отчёту. Без JSON — только текст.
+/// Использует те же PAPAYU_LLM_* переменные. При ошибке или отсутствии конфига возвращает Err.
+pub async fn fetch_narrative_for_report(report: &AnalyzeReport) -> Result<String, String> {
+    let api_url = std::env::var("PAPAYU_LLM_API_URL").map_err(|_| "PAPAYU_LLM_API_URL not set".to_string())?;
+    let api_url = api_url.trim();
+    if api_url.is_empty() {
+        return Err("PAPAYU_LLM_API_URL is empty".to_string());
+    }
+    let api_key = std::env::var("PAPAYU_LLM_API_KEY").ok();
+    let model = std::env::var("PAPAYU_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    let timeout_sec = std::env::var("PAPAYU_LLM_TIMEOUT_SEC")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(30);
+    let max_tokens = std::env::var("PAPAYU_LLM_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(512);
+
+    let system = "Ты — аудитор проектов. Напиши краткий вывод для разработчика: 2–4 предложения по контексту ниже. Только текст, без заголовков и маркированных списков. Язык: русский.";
+    let user = build_narrative_context(report);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_sec))
+        .build()
+        .map_err(|e| format!("HTTP client: {}", e))?;
+    let body = ChatRequest {
+        model: model.trim().to_string(),
+        messages: vec![
+            ChatMessage { role: "system".to_string(), content: system.to_string() },
+            ChatMessage { role: "user".to_string(), content: user },
+        ],
+        temperature: Some(0.3),
+        max_tokens: Some(max_tokens),
+        top_p: Some(1.0),
+        presence_penalty: Some(0.0),
+        frequency_penalty: Some(0.0),
+        response_format: None,
+    };
+    let mut req = client.post(api_url).json(&body);
+    if let Some(ref key) = api_key {
+        if !key.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", key.trim()));
+        }
+    }
+    let resp = req.send().await.map_err(|e| format!("Request: {}", e))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("Response: {}", e))?;
+    if !status.is_success() {
+        return Err(format!("API {}: {}", status, text.chars().take(500).collect::<String>()));
+    }
+    let chat: ChatResponse = serde_json::from_str(&text).map_err(|e| format!("Response JSON: {}", e))?;
+    let content = chat
+        .choices
+        .as_ref()
+        .and_then(|c| c.first())
+        .and_then(|c| c.message.content.as_deref())
+        .unwrap_or("")
+        .trim();
+    if content.is_empty() {
+        return Err("Empty narrative from API".to_string());
+    }
+    Ok(content.to_string())
 }
 
 const MAX_CONTEXT_ROUNDS: u32 = 2;

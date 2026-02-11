@@ -13,6 +13,7 @@ mod preview_actions;
 mod project_content;
 mod projects;
 mod propose_actions;
+mod rag_query;
 mod redo_last;
 mod run_batch;
 mod settings_export;
@@ -38,10 +39,12 @@ pub use projects::{
     list_projects, list_sessions, set_project_settings,
 };
 pub use propose_actions::propose_actions;
+pub use rag_query::chat_on_project;
 pub use redo_last::redo_last;
 pub use run_batch::run_batch;
 pub use settings_export::{export_settings, import_settings};
 pub use trends::{fetch_trends_recommendations, get_trends_recommendations};
+pub use llm_planner::{fetch_narrative_for_report, is_llm_configured};
 pub use undo_last::{get_undo_redo_state_cmd, undo_available, undo_last};
 pub use undo_last_tx::undo_last_tx;
 pub use undo_status::undo_status;

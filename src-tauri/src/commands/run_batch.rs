@@ -1,12 +1,14 @@
 use std::path::Path;
 
 use crate::agent_sync;
+use crate::audit_log;
 use crate::commands::get_project_profile::get_project_limits;
-use crate::commands::{analyze_project, apply_actions, preview_actions};
+use crate::commands::{analyze_project, apply_actions, fetch_narrative_for_report, preview_actions};
+use crate::commands::is_llm_configured;
 use crate::snyk_sync;
 use crate::tx::get_undo_redo_state;
 use crate::types::{BatchEvent, BatchPayload};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 pub async fn run_batch(app: AppHandle, payload: BatchPayload) -> Result<Vec<BatchEvent>, String> {
     let mut events = Vec::new();
@@ -17,14 +19,28 @@ pub async fn run_batch(app: AppHandle, payload: BatchPayload) -> Result<Vec<Batc
         payload.paths.clone()
     };
 
-    let report = analyze_project(paths.clone(), payload.attached_files.clone())
+    let mut report = analyze_project(paths.clone(), payload.attached_files.clone())
         .map_err(|e| e.to_string())?;
+    if is_llm_configured() {
+        if let Ok(narrative) = fetch_narrative_for_report(&report).await {
+            report.narrative = narrative;
+        }
+    }
     let snyk_findings = if snyk_sync::is_snyk_sync_enabled() {
         snyk_sync::fetch_snyk_code_issues().await.ok()
     } else {
         None
     };
     agent_sync::write_agent_sync_if_enabled(&report, snyk_findings);
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = audit_log::log_event(
+            &dir,
+            "analyze",
+            paths.first().map(String::as_str),
+            Some("ok"),
+            Some(&format!("findings={}", report.findings.len())),
+        );
+    }
     events.push(BatchEvent {
         kind: "report".to_string(),
         report: Some(report.clone()),

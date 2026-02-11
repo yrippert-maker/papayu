@@ -1,5 +1,8 @@
 mod agent_sync;
+mod audit_log;
 mod commands;
+mod policy_engine;
+mod secrets_guard;
 mod snyk_sync;
 mod context;
 mod domain_notes;
@@ -16,28 +19,44 @@ mod verify;
 use commands::FolderLinks;
 use commands::{
     add_project, agentic_run, analyze_project, analyze_weekly_reports, append_session_event,
-    apply_actions, apply_actions_tx, apply_project_setting_cmd, export_settings,
-    fetch_trends_recommendations, generate_actions, generate_actions_from_report,
-    get_project_profile, get_project_settings, get_trends_recommendations, get_undo_redo_state_cmd,
-    import_settings, list_projects, list_sessions, load_folder_links, preview_actions,
-    propose_actions, redo_last, run_batch, save_folder_links, save_report_to_file,
-    set_project_settings, undo_available, undo_last, undo_last_tx, undo_status,
+    apply_actions, apply_actions_tx, apply_project_setting_cmd, chat_on_project, export_settings,
+    fetch_narrative_for_report, fetch_trends_recommendations, generate_actions,
+    generate_actions_from_report, get_project_profile, get_project_settings,
+    get_trends_recommendations, get_undo_redo_state_cmd, import_settings, list_projects,
+    list_sessions, load_folder_links, preview_actions, propose_actions, redo_last, run_batch,
+    save_folder_links, save_report_to_file, set_project_settings, undo_available, undo_last,
+    undo_last_tx, undo_status,
 };
 use tauri::Manager;
 use types::{ApplyPayload, BatchPayload};
 
 #[tauri::command]
 async fn analyze_project_cmd(
+    app: tauri::AppHandle,
     paths: Vec<String>,
     attached_files: Option<Vec<String>>,
 ) -> Result<types::AnalyzeReport, String> {
-    let report = analyze_project(paths, attached_files)?;
+    let mut report = analyze_project(paths.clone(), attached_files)?;
+    if commands::is_llm_configured() {
+        if let Ok(narrative) = fetch_narrative_for_report(&report).await {
+            report.narrative = narrative;
+        }
+    }
     let snyk_findings = if snyk_sync::is_snyk_sync_enabled() {
         snyk_sync::fetch_snyk_code_issues().await.ok()
     } else {
         None
     };
     agent_sync::write_agent_sync_if_enabled(&report, snyk_findings);
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = audit_log::log_event(
+            &dir,
+            "analyze",
+            paths.first().map(String::as_str),
+            Some("ok"),
+            Some(&format!("findings={}", report.findings.len())),
+        );
+    }
     Ok(report)
 }
 
@@ -48,7 +67,17 @@ fn preview_actions_cmd(payload: ApplyPayload) -> Result<types::PreviewResult, St
 
 #[tauri::command]
 fn apply_actions_cmd(app: tauri::AppHandle, payload: ApplyPayload) -> types::ApplyResult {
-    apply_actions(app, payload)
+    let result = apply_actions(app.clone(), payload.clone());
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = audit_log::log_event(
+            &dir,
+            "apply",
+            Some(&payload.root_path),
+            if result.ok { Some("ok") } else { Some("fail") },
+            result.error.as_deref(),
+        );
+    }
+    result
 }
 
 #[tauri::command]
@@ -149,6 +178,37 @@ async fn distill_and_save_domain_note_cmd(
     domain_notes::distill_and_save_note(path, &query, &answer_md, &sources_tuples, confidence).await
 }
 
+/// Журнал аудита: последние события.
+#[tauri::command]
+fn audit_log_list_cmd(app: tauri::AppHandle, limit: Option<usize>) -> Result<Vec<audit_log::AuditEvent>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(audit_log::read_events(&dir, limit.unwrap_or(100)))
+}
+
+/// Сканирование проекта на подозрительные секреты.
+#[tauri::command]
+fn scan_secrets_cmd(project_path: String) -> Vec<secrets_guard::SecretSuspicion> {
+    secrets_guard::scan_secrets(std::path::Path::new(&project_path))
+}
+
+/// Список правил политик.
+#[tauri::command]
+fn get_policies_cmd() -> Vec<policy_engine::PolicyRule> {
+    policy_engine::get_policies()
+}
+
+/// Проверка проекта по правилам.
+#[tauri::command]
+fn run_policy_check_cmd(project_path: String) -> Vec<policy_engine::PolicyCheckResult> {
+    policy_engine::run_policy_check(std::path::Path::new(&project_path))
+}
+
+/// RAG: вопрос по коду проекта (контекст из файлов + LLM).
+#[tauri::command]
+async fn rag_query_cmd(project_path: String, question: String) -> Result<String, String> {
+    chat_on_project(std::path::Path::new(&project_path), &question).await
+}
+
 /// Сохранить отчёт в docs/reports/weekly_YYYY-MM-DD.md.
 #[tauri::command]
 fn save_report_cmd(
@@ -172,6 +232,11 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             analyze_project_cmd,
+            audit_log_list_cmd,
+            scan_secrets_cmd,
+            get_policies_cmd,
+            run_policy_check_cmd,
+            rag_query_cmd,
             preview_actions_cmd,
             apply_actions_cmd,
             undo_last,
