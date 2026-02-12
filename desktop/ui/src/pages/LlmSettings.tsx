@@ -140,7 +140,7 @@ export function LlmSettingsPage() {
         </div>
       )}
 
-      {/* Base URL (Ollama) */}
+      {/* Base URL (Ollama or custom) */}
       {settings.provider === 'ollama' && (
         <div className="space-y-2">
           <label className="text-sm font-medium text-muted-foreground">URL Ollama</label>
