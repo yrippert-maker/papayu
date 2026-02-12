@@ -241,6 +241,11 @@ pub fn analyze_project(window: tauri::Window, path: String) -> Result<AnalyzeRep
         });
     }
 
+    let _ = window.emit(PROGRESS_EVENT, "Глубокий анализ кода…");
+    let deep = crate::deep_analysis::run_deep_analysis(std::path::Path::new(&path));
+    findings.extend(deep.findings);
+    signals.extend(deep.signals);
+
     let _ = window.emit(PROGRESS_EVENT, "Формирую вывод…");
 
     let recommendations = enrich_recommendations(recommendations);

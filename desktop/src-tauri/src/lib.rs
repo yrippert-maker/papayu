@@ -1,3 +1,4 @@
+mod deep_analysis;
 mod commands;
 mod types;
 
