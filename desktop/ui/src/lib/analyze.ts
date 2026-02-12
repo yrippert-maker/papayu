@@ -214,3 +214,58 @@ export async function generateAiActions(
     },
   });
 }
+
+// ---- RAG Chat ----
+
+export interface FileContext {
+  path: string;
+  content: string;
+  lines: number;
+}
+
+export interface ProjectContextResponse {
+  ok: boolean;
+  files: FileContext[];
+  total_files: number;
+  total_bytes: number;
+  truncated: boolean;
+  error?: string | null;
+}
+
+export async function collectProjectContext(
+  path: string,
+): Promise<ProjectContextResponse> {
+  return invoke<ProjectContextResponse>('collect_project_context', {
+    request: { path },
+  });
+}
+
+export async function chatWithProject(
+  settings: LlmSettings,
+  projectPath: string,
+  projectContext: ProjectContextResponse,
+  llmContext: LlmContext,
+  question: string,
+  chatHistory: { role: string; content: string }[],
+): Promise<LlmResponse> {
+  // Build context from file contents
+  const filesSummary = projectContext.files
+    .map((f) => `--- ${f.path} (${f.lines} строк) ---\n${f.content}`)
+    .join('\n\n');
+
+  const contextStr = JSON.stringify(llmContext);
+
+  const fullPrompt = `Контекст проекта (${projectPath}):\n${contextStr}\n\nФайлы проекта (${projectContext.total_files} файлов, ${projectContext.total_bytes} байт${projectContext.truncated ? ', обрезано' : ''}):\n${filesSummary}\n\n${chatHistory.length > 0 ? 'История чата:\n' + chatHistory.map((m) => `${m.role}: ${m.content}`).join('\n') + '\n\n' : ''}Вопрос пользователя: ${question}`;
+
+  return invoke<LlmResponse>('ask_llm', {
+    request: {
+      provider: settings.provider,
+      model: settings.model,
+      api_key: settings.apiKey || null,
+      base_url: settings.baseUrl || null,
+      context: contextStr,
+      prompt: fullPrompt,
+      max_tokens: 2048,
+    },
+  });
+}

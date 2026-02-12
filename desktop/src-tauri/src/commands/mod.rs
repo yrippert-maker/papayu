@@ -13,3 +13,5 @@ pub use generate_ai_actions::generate_ai_actions;
 pub use get_app_info::get_app_info;
 pub use preview_actions::preview_actions;
 pub use undo_last::undo_last;
+mod collect_context;
+pub use collect_context::collect_project_context;

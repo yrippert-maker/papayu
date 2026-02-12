@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { analyzeProject, askLlm, generateAiActions, type AnalyzeReport, type Action, type ApplyResult, type UndoResult, type PreviewResult, type DiffItem, type LlmSettings, DEFAULT_LLM_SETTINGS } from '../lib/analyze';
+import { analyzeProject, askLlm, generateAiActions, collectProjectContext, chatWithProject, type AnalyzeReport, type Action, type ApplyResult, type UndoResult, type PreviewResult, type DiffItem, type LlmSettings, type ProjectContextResponse, DEFAULT_LLM_SETTINGS } from '../lib/analyze';
 import { animateFadeInUp } from '../lib/anime-utils';
 import { useAppStore } from '../store/app-store';
 
@@ -122,6 +122,7 @@ export function Tasks() {
   };
 
   const [isGeneratingActions, setIsGeneratingActions] = useState(false);
+  const [projectContext, setProjectContext] = useState<ProjectContextResponse | null>(null);
 
   const handleAiCodeGen = async (report: AnalyzeReport) => {
     const settings = loadLlmSettings();
@@ -230,16 +231,61 @@ export function Tasks() {
     });
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim()) return;
-    setMessages((prev) => [...prev, { role: 'user', text: input.trim() }]);
+    const question = input.trim();
+    setMessages((prev) => [...prev, { role: 'user', text: question }]);
     setInput('');
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', text: 'Ответ ИИ агента будет отображаться здесь. Результаты действий агента подключаются к backend.' },
-      ]);
-    }, 500);
+
+    const settings = loadLlmSettings();
+    if (!settings.apiKey && settings.provider !== 'ollama') {
+      setMessages((prev) => [...prev, { role: 'system', text: '⚠️ Для чата нужен API-ключ. Перейдите в Настройки LLM (🧠).' }]);
+      return;
+    }
+
+    if (!lastReport || !lastPath) {
+      setMessages((prev) => [...prev, { role: 'system', text: '📂 Сначала проанализируйте проект — выберите папку для анализа.' }]);
+      return;
+    }
+
+    // Collect project context if not yet loaded
+    let ctx = projectContext;
+    if (!ctx) {
+      setMessages((prev) => [...prev, { role: 'system', text: '📖 Индексирую файлы проекта...' }]);
+      try {
+        ctx = await collectProjectContext(lastPath);
+        setProjectContext(ctx);
+      } catch (e) {
+        setMessages((prev) => [...prev, { role: 'system', text: `❌ Ошибка индексации: ${e}` }]);
+        return;
+      }
+    }
+
+    setMessages((prev) => [...prev, { role: 'system', text: '🤔 Думаю...' }]);
+
+    try {
+      // Build chat history from recent messages
+      const chatHistory = messages
+        .filter((m): m is { role: 'user'; text: string } | { role: 'assistant'; text: string } => 'text' in m && (m.role === 'user' || m.role === 'assistant'))
+        .slice(-6)
+        .map((m) => ({ role: m.role, content: m.text }));
+
+      const resp = await chatWithProject(settings, lastPath, ctx, lastReport.llm_context, question, chatHistory);
+
+      // Remove "Думаю..." message
+      setMessages((prev) => {
+        const filtered = prev.filter((m) => !('text' in m && m.text === '🤔 Думаю...'));
+        if (resp.ok) {
+          return [...filtered, { role: 'assistant' as const, text: resp.content }];
+        }
+        return [...filtered, { role: 'system' as const, text: `❌ ${resp.error}` }];
+      });
+    } catch (e) {
+      setMessages((prev) => {
+        const filtered = prev.filter((m) => !('text' in m && m.text === '🤔 Думаю...'));
+        return [...filtered, { role: 'system' as const, text: `❌ Ошибка: ${e}` }];
+      });
+    }
   };
 
   const runAnalysis = async (pathStr: string) => {
@@ -253,6 +299,7 @@ export function Tasks() {
     try {
       const report = await analyzeProject(pathStr);
       setPreviousReport(lastReport);
+      setProjectContext(null);
       setLastReport(report);
       setLastPath(pathStr);
       storeSetLastReport(report, pathStr);
