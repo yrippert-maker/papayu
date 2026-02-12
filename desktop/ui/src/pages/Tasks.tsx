@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { analyzeProject, askLlm, type AnalyzeReport, type Action, type ApplyResult, type UndoResult, type PreviewResult, type DiffItem, type LlmSettings, DEFAULT_LLM_SETTINGS } from '../lib/analyze';
+import { analyzeProject, askLlm, generateAiActions, type AnalyzeReport, type Action, type ApplyResult, type UndoResult, type PreviewResult, type DiffItem, type LlmSettings, DEFAULT_LLM_SETTINGS } from '../lib/analyze';
 import { animateFadeInUp } from '../lib/anime-utils';
 import { useAppStore } from '../store/app-store';
 
@@ -119,6 +119,73 @@ export function Tasks() {
       ]);
     }
     setIsAiAnalyzing(false);
+  };
+
+  const [isGeneratingActions, setIsGeneratingActions] = useState(false);
+
+  const handleAiCodeGen = async (report: AnalyzeReport) => {
+    const settings = loadLlmSettings();
+    if (!settings.apiKey && settings.provider !== 'ollama') {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'system', text: '⚠️ API-ключ не настроен. Перейдите в Настройки LLM.' },
+      ]);
+      return;
+    }
+
+    setIsGeneratingActions(true);
+    setMessages((prev) => [...prev, { role: 'system', text: '🔧 AI генерирует исправления...' }]);
+
+    try {
+      const resp = await generateAiActions(settings, report);
+      if (resp.ok && resp.actions.length > 0) {
+        // Merge AI actions into the report
+        const updatedReport = {
+          ...report,
+          actions: [...(report.actions ?? []), ...resp.actions],
+        };
+        setLastReport(updatedReport);
+        storeSetLastReport(updatedReport, report.path);
+
+        // Init selection for new actions
+        const newSelection: Record<string, boolean> = { ...selectedActions };
+        resp.actions.forEach((a) => { newSelection[a.id] = true; });
+        setSelectedActions(newSelection);
+
+        // Update the last assistant message with new report
+        setMessages((prev) => {
+          const updated = [...prev];
+          // Find the last assistant message with this report and update it
+          for (let i = updated.length - 1; i >= 0; i--) {
+            const msg = updated[i];
+            if ('report' in msg && msg.report.path === report.path) {
+              updated[i] = { ...msg, report: updatedReport };
+              break;
+            }
+          }
+          return [
+            ...updated,
+            { role: 'assistant', text: `🔧 **AI сгенерировал ${resp.actions.length} исправлений** (${settings.model}):\n\n${resp.explanation}` },
+          ];
+        });
+      } else if (resp.ok && resp.actions.length === 0) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'system', text: '✓ AI не нашёл дополнительных исправлений — проект в хорошем состоянии.' },
+        ]);
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'system', text: `❌ Ошибка генерации: ${resp.error}` },
+        ]);
+      }
+    } catch (e) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'system', text: `❌ Ошибка: ${e}` },
+      ]);
+    }
+    setIsGeneratingActions(false);
   };
 
   useEffect(() => {
@@ -605,6 +672,8 @@ export function Tasks() {
                         onUndo={handleUndoLast}
                         onAiAnalysis={handleAiAnalysis}
                         isAiAnalyzing={isAiAnalyzing}
+                        onAiCodeGen={handleAiCodeGen}
+                        isGeneratingActions={isGeneratingActions}
                       />
                     )}
                   </div>
@@ -803,6 +872,8 @@ function ReportBlock({
   onUndo: (projectPath: string) => void;
   onAiAnalysis?: (report: AnalyzeReport) => void;
   isAiAnalyzing?: boolean;
+  onAiCodeGen?: (report: AnalyzeReport) => void;
+  isGeneratingActions?: boolean;
 }) {
   if (error) {
     return <div className="text-sm text-destructive">Ошибка: {error}</div>;
@@ -946,6 +1017,17 @@ function ReportBlock({
               >
                 <Bot className="w-4 h-4" />
                 {isAiAnalyzing ? 'AI анализирует...' : 'AI Анализ'}
+              </button>
+            )}
+            {isCurrentReport && onAiCodeGen && (
+              <button
+                type="button"
+                onClick={() => onAiCodeGen(r)}
+                disabled={isGeneratingActions}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border bg-green-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isGeneratingActions ? 'animate-spin' : ''}`} />
+                {isGeneratingActions ? 'Генерирую...' : 'AI Исправления'}
               </button>
             )}
             <button

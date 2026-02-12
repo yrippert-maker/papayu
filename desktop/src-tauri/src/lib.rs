@@ -1,7 +1,7 @@
 mod commands;
 mod types;
 
-use commands::{analyze_project, apply_actions, ask_llm, get_app_info, preview_actions, undo_last};
+use commands::{analyze_project, apply_actions, ask_llm, generate_ai_actions, get_app_info, preview_actions, undo_last};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,6 +26,7 @@ pub fn run() {
       undo_last,
       get_app_info,
       ask_llm,
+      generate_ai_actions,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

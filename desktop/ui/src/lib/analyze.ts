@@ -187,3 +187,30 @@ export async function askLlm(
     },
   });
 }
+
+// ---- AI Code Generation ----
+
+export interface GenerateActionsResponse {
+  ok: boolean;
+  actions: Action[];
+  explanation: string;
+  error?: string | null;
+}
+
+export async function generateAiActions(
+  settings: LlmSettings,
+  report: AnalyzeReport,
+): Promise<GenerateActionsResponse> {
+  return invoke<GenerateActionsResponse>('generate_ai_actions', {
+    request: {
+      provider: settings.provider,
+      model: settings.model,
+      api_key: settings.apiKey || null,
+      base_url: settings.baseUrl || null,
+      context: JSON.stringify(report.llm_context),
+      findings_json: JSON.stringify(report.findings),
+      project_path: report.path,
+      max_tokens: 4096,
+    },
+  });
+}
