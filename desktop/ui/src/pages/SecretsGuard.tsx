@@ -1,10 +1,22 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, ArrowLeft, CheckCircle2, AlertTriangle, Shield, Key, Info } from 'lucide-react';
+import { Lock, ArrowLeft, CheckCircle2, AlertTriangle, Shield, Key, Info, Wand2 } from 'lucide-react';
 import { useAppStore } from '../store/app-store';
+import { generateAiActions, DEFAULT_LLM_SETTINGS, type LlmSettings } from '../lib/analyze';
+
+function loadLlmSettings(): LlmSettings {
+  try {
+    const raw = localStorage.getItem('papayu_llm_settings');
+    if (raw) return { ...DEFAULT_LLM_SETTINGS, ...JSON.parse(raw) };
+  } catch { /* ignored */ }
+  return { ...DEFAULT_LLM_SETTINGS };
+}
 
 export function SecretsGuard() {
   const navigate = useNavigate();
   const lastReport = useAppStore((s) => s.lastReport);
+  const [fixing, setFixing] = useState(false);
+  const [fixResult, setFixResult] = useState<string | null>(null);
 
   const hasData = !!lastReport;
   const signals = lastReport?.signals ?? [];
@@ -13,12 +25,15 @@ export function SecretsGuard() {
   // Extract security-related findings
   const secretFindings = findings.filter(
     (f) =>
+      f.title.includes('\u{1F510}') ||
       f.title.toLowerCase().includes('.env') ||
       f.title.toLowerCase().includes('secret') ||
       f.title.toLowerCase().includes('gitignore') ||
       f.title.toLowerCase().includes('key') ||
       f.title.toLowerCase().includes('token') ||
-      f.title.toLowerCase().includes('password')
+      f.title.toLowerCase().includes('password') ||
+      f.title.toLowerCase().includes('pem') ||
+      f.title.toLowerCase().includes('aws')
   );
 
   const securitySignals = signals.filter((s) => s.category === 'security');
@@ -103,8 +118,46 @@ export function SecretsGuard() {
                   <><AlertTriangle className="w-4 h-4" /><span>Есть проблемы</span></>
                 )}
               </div>
+              {!isClean && lastReport && (
+                <button
+                  onClick={async () => {
+                    const settings = loadLlmSettings();
+                    if (!settings.apiKey && settings.provider !== 'ollama') {
+                      setFixResult('⚠️ API-ключ не настроен. Перейдите в Настройки LLM.');
+                      return;
+                    }
+                    setFixing(true);
+                    setFixResult(null);
+                    try {
+                      const secFindings = allSecurityIssues.map((f) => ({ severity: f.severity, title: f.title, details: f.details }));
+                      const resp = await generateAiActions(settings, { ...lastReport, findings: secFindings });
+                      if (resp.ok && resp.actions.length > 0) {
+                        setFixResult(`✅ AI сгенерировал ${resp.actions.length} исправлений. Перейдите на главную для apply.`);
+                      } else if (resp.ok) {
+                        setFixResult('✓ AI не нашёл автоматических исправлений.');
+                      } else {
+                        setFixResult(`❌ ${resp.error}`);
+                      }
+                    } catch (e) {
+                      setFixResult(`❌ ${e}`);
+                    }
+                    setFixing(false);
+                  }}
+                  disabled={fixing}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+                >
+                  <Wand2 className={`w-4 h-4 ${fixing ? 'animate-spin' : ''}`} />
+                  {fixing ? 'Генерирую...' : 'AI Fix'}
+                </button>
+              )}
             </div>
           </div>
+
+          {fixResult && (
+            <div className={`p-4 rounded-xl border text-sm mb-8 ${fixResult.startsWith('✅') || fixResult.startsWith('✓') ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'}`}>
+              {fixResult}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-6 mb-8 animate-fade-in-up" style={{ animationDelay: '0.1s', animationFillMode: 'both' }}>
             {statCards.map((stat, i) => (

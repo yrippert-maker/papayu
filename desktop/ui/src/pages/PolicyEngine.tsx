@@ -1,10 +1,23 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, ArrowLeft, CheckCircle2, AlertTriangle, Info } from 'lucide-react';
+import { Shield, ArrowLeft, CheckCircle2, AlertTriangle, Info, ToggleLeft, ToggleRight } from 'lucide-react';
 import { useAppStore } from '../store/app-store';
+
+function loadPolicyToggles(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem('papayu_policy_toggles');
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignored */ }
+  return {};
+}
+function savePolicyToggles(t: Record<string, boolean>) {
+  localStorage.setItem('papayu_policy_toggles', JSON.stringify(t));
+}
 
 export function PolicyEngine() {
   const navigate = useNavigate();
   const lastReport = useAppStore((s) => s.lastReport);
+  const [toggles, setToggles] = useState<Record<string, boolean>>(loadPolicyToggles);
 
   const signals = lastReport?.signals ?? [];
   const findings = lastReport?.findings ?? [];
@@ -18,36 +31,78 @@ export function PolicyEngine() {
 
   const policyRules = [
     {
+      id: 'env-gitignore',
       title: '.env без .gitignore',
       description: 'Файлы .env должны быть исключены из git',
       check: !findings.some((f) => f.title.toLowerCase().includes('.env') || f.title.toLowerCase().includes('gitignore')),
       color: 'blue',
     },
     {
+      id: 'readme',
       title: 'Наличие README',
       description: 'Проект должен содержать README',
       check: !findings.some((f) => f.title.toLowerCase().includes('readme')),
       color: 'purple',
     },
     {
+      id: 'tests',
       title: 'Наличие тестов',
       description: 'Проект должен содержать директорию tests/',
       check: !findings.some((f) => f.title.toLowerCase().includes('тест') || f.title.toLowerCase().includes('test')),
       color: 'emerald',
     },
     {
+      id: 'depth',
       title: 'Глубина вложенности',
       description: 'Не должна превышать 6 уровней',
       check: !findings.some((f) => f.title.toLowerCase().includes('глубина') || f.title.toLowerCase().includes('вложен')),
       color: 'orange',
     },
+    {
+      id: 'secrets',
+      title: 'Нет секретов в коде',
+      description: 'Пароли, API-ключи, токены не захардкожены',
+      check: !findings.some((f) => f.title.includes('\u{1F510}')),
+      color: 'red',
+    },
+    {
+      id: 'vulns',
+      title: 'Нет уязвимостей',
+      description: 'eval(), innerHTML, SQL injection и другие паттерны',
+      check: !findings.some((f) => f.title.includes('\u{26A0}\u{FE0F}')),
+      color: 'red',
+    },
+    {
+      id: 'quality',
+      title: 'Качество кода',
+      description: 'Минимум TODO/FIXME, нет console.log в проде',
+      check: !findings.some((f) => f.title.includes('\u{1F4DD}')),
+      color: 'blue',
+    },
+    {
+      id: 'large-files',
+      title: 'Размер файлов',
+      description: 'Файлы не должны превышать 500 строк',
+      check: !findings.some((f) => f.title.includes('\u{1F4CF}')),
+      color: 'purple',
+    },
   ];
+
+  const togglePolicy = (id: string) => {
+    const next = { ...toggles, [id]: !(toggles[id] ?? true) };
+    setToggles(next);
+    savePolicyToggles(next);
+  };
+
+  const enabledRules = policyRules.filter((r) => toggles[r.id] !== false);
+  const passedCount = enabledRules.filter((r) => r.check).length;
 
   const colorClasses: Record<string, string> = {
     blue: 'from-blue-500/10 to-blue-600/5 border-blue-200/50 text-blue-700 dark:text-blue-400',
     purple: 'from-purple-500/10 to-purple-600/5 border-purple-200/50 text-purple-700 dark:text-purple-400',
     emerald: 'from-emerald-500/10 to-emerald-600/5 border-emerald-200/50 text-emerald-700 dark:text-emerald-400',
     orange: 'from-orange-500/10 to-orange-600/5 border-orange-200/50 text-orange-700 dark:text-orange-400',
+    red: 'from-red-500/10 to-red-600/5 border-red-200/50 text-red-700 dark:text-red-400',
   };
 
   return (
@@ -113,26 +168,35 @@ export function PolicyEngine() {
           </div>
 
           <div className="bg-card/80 backdrop-blur-sm p-6 md:p-8 rounded-2xl border mb-8 animate-fade-in-up" style={{ animationDelay: '0.1s', animationFillMode: 'both' }}>
-            <div className="flex items-center gap-3 mb-6">
-              <Shield className="w-6 h-6 text-primary" />
-              <h2 className="text-2xl md:text-3xl font-bold tracking-tight">Проверки</h2>
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <Shield className="w-6 h-6 text-primary" />
+                <h2 className="text-2xl md:text-3xl font-bold tracking-tight">Проверки</h2>
+              </div>
+              <span className="text-sm text-muted-foreground">{passedCount}/{enabledRules.length} пройдено</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {policyRules.map((rule, index) => {
+              {policyRules.map((rule) => {
                 const cls = colorClasses[rule.color] || colorClasses.blue;
+                const enabled = toggles[rule.id] !== false;
                 return (
-                  <div key={index} className={`p-5 rounded-xl border-2 bg-gradient-to-br ${cls} transition-all-smooth hover:shadow-md`}>
+                  <div key={rule.id} className={`p-5 rounded-xl border-2 bg-gradient-to-br ${cls} transition-all-smooth hover:shadow-md ${!enabled ? 'opacity-40' : ''}`}>
                     <div className="flex items-start gap-3">
                       <div className="p-2 rounded-lg bg-white/20 dark:bg-black/20">
-                        {rule.check ? <CheckCircle2 className="w-5 h-5 text-green-600" /> : <AlertTriangle className="w-5 h-5 text-red-600" />}
+                        {enabled ? (rule.check ? <CheckCircle2 className="w-5 h-5 text-green-600" /> : <AlertTriangle className="w-5 h-5 text-red-600" />) : <Shield className="w-5 h-5 opacity-40" />}
                       </div>
                       <div className="flex-1">
                         <div className="font-semibold mb-1">{rule.title}</div>
                         <div className="text-sm opacity-80">{rule.description}</div>
-                        <div className={`text-xs font-medium mt-2 ${rule.check ? 'text-green-600' : 'text-red-600'}`}>
-                          {rule.check ? '✓ Пройдено' : '✗ Нарушение'}
-                        </div>
+                        {enabled && (
+                          <div className={`text-xs font-medium mt-2 ${rule.check ? 'text-green-600' : 'text-red-600'}`}>
+                            {rule.check ? '\u2713 Пройдено' : '\u2717 Нарушение'}
+                          </div>
+                        )}
                       </div>
+                      <button onClick={() => togglePolicy(rule.id)} className="flex-shrink-0 p-1 hover:opacity-70 transition-opacity" title={enabled ? 'Выключить' : 'Включить'}>
+                        {enabled ? <ToggleRight className="w-6 h-6 text-primary" /> : <ToggleLeft className="w-6 h-6 text-muted-foreground" />}
+                      </button>
                     </div>
                   </div>
                 );
