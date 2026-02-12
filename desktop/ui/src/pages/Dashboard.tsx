@@ -96,7 +96,7 @@ export function Dashboard() {
   const handleCardClick = (path: string) => {
     try {
       eventBus.emit(Events.NAVIGATE, { path });
-      addAuditEvent({ id: `nav-${Math.random().toString(36).slice(2)}`, event: 'navigation', timestamp: new Date().toISOString(), actor: 'user' });
+      const navId = crypto.randomUUID(); addAuditEvent({ id: navId, event: 'navigation', timestamp: new Date().toISOString(), actor: 'user' });
     } catch { /* ignored */ }
     navigate(path);
   };
