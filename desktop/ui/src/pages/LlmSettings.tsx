@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Settings as SettingsIcon, ArrowLeft, Save, Eye, EyeOff, Zap, CheckCircle2, XCircle } from 'lucide-react';
 import { ROUTES } from '../config/routes';
@@ -29,12 +29,14 @@ export function LlmSettingsPage() {
   const providerConfig = LLM_MODELS[settings.provider];
   const models = providerConfig?.models ?? [];
 
-  useEffect(() => {
-    // When provider changes, set first available model
-    if (models.length > 0 && !models.find((m) => m.value === settings.model)) {
-      setSettings((s) => ({ ...s, model: models[0].value }));
-    }
-  }, [settings.provider]);
+  const handleProviderChange = useCallback((provider: string) => {
+    const newModels = LLM_MODELS[provider]?.models ?? [];
+    setSettings((s) => ({
+      ...s,
+      provider,
+      model: newModels[0]?.value ?? s.model,
+    }));
+  }, []);
 
   const handleSave = () => {
     saveSettings(settings);
@@ -84,7 +86,7 @@ export function LlmSettingsPage() {
           {Object.entries(LLM_MODELS).map(([key, cfg]) => (
             <button
               key={key}
-              onClick={() => setSettings((s) => ({ ...s, provider: key }))}
+              onClick={() => handleProviderChange(key)}
               className={`px-4 py-2 rounded-lg border text-sm font-medium transition-all ${
                 settings.provider === key
                   ? 'border-primary bg-primary/10 text-primary'
@@ -138,7 +140,7 @@ export function LlmSettingsPage() {
         </div>
       )}
 
-      {/* Base URL (Ollama or custom) */}
+      {/* Base URL (Ollama) */}
       {settings.provider === 'ollama' && (
         <div className="space-y-2">
           <label className="text-sm font-medium text-muted-foreground">URL Ollama</label>
